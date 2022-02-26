@@ -12,41 +12,25 @@
 #define TXD_PIN (GPIO_NUM_1)
 #define RXD_PIN (GPIO_NUM_3)
 
-#define TXD2_PIN (GPIO_NUM_26)
-#define RXD2_PIN (GPIO_NUM_25)
+#define TXD2_PIN (GPIO_NUM_16)
+#define RXD2_PIN (GPIO_NUM_32)
 
 #define pms0_uart UART_NUM_0
 #define pms1_uart UART_NUM_1
 static const int RX_BUF_SIZE = 256;
 static const int RX_BUF2_SIZE = 1024;
+
 static const char *TAG_PMS = "PMS";
+static const char *TAG_PMS1 = "PMS1";
 typedef struct {
 	uint16_t pm1_0;
 	uint16_t pm2_5;
 	uint16_t pm10;
 } pm_data_t;
+
 void inituart();
 esp_err_t read_uart(uart_port_t uart_num , pm_data_t *pm);
-/*
- * @brief Initialise UART driver
- * @param baud UART BAUD rate
- * @param uart_no UART port number
- * @param tx_pin UART TX pin GPIO num
- * @param rx_pin UART RX pin GPIO num
- * @param rx_buffer UART RX ring buffer size
- */
-void inituart(int baud, uart_port_t uart_no, int tx_pin, int rx_pin, int rx_buffer) {
-	const uart_config_t uart_config = {
-			.baud_rate = baud,
-			.data_bits = UART_DATA_8_BITS,
-			.parity = UART_PARITY_DISABLE,
-			.stop_bits = UART_STOP_BITS_1,
-			.flow_ctrl = UART_HW_FLOWCTRL_DISABLE
-	};
-	uart_param_config(uart_no, &uart_config);
-	uart_set_pin(uart_no, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-	uart_driver_install(uart_no, rx_buffer, 0, 0, NULL, 0);
-}
+
 /*
  * @brief read PMS data from uart buffer and parse its value according to PMS datasheet
  *
@@ -55,35 +39,6 @@ void inituart(int baud, uart_port_t uart_no, int tx_pin, int rx_pin, int rx_buff
  * @return error_code ESP_OK If parsing is successful
  *                    ESP_FAIL IF any error occur
  */
-
-
-void app_main(void)
-{
-
-	printf("init device\n");
-
-	esp_err_t err;
-	inituart(9600, UART_NUM_0, TXD_PIN, RXD_PIN, RX_BUF_SIZE);
-	inituart(9600, UART_NUM_1, TXD2_PIN, RXD2_PIN, RX_BUF2_SIZE);
-	while(1){
-		pm_data_t value0 = {0};
-//		pm_data_t value1 = {0};
-		pm_data_t pms0Value = {0};
-//		pm_data_t pms1Value = {0};
-		err = read_uart(pms0_uart, &value0);
-		if (err == ESP_OK ){
-			//    				iteration_pms0 += 1;
-			pms0Value.pm10 += value0.pm10;
-			pms0Value.pm1_0 += value0.pm1_0;
-			pms0Value.pm2_5 += value0.pm2_5;
-		}
-//		printf("pms data:");
-		ESP_LOGI(TAG_PMS,"pm1.0=%d",pms0Value.pm1_0);
-		ESP_LOGI(TAG_PMS,"pm2.5=%d",pms0Value.pm2_5);
-		ESP_LOGI(TAG_PMS,"pm10=%d",pms0Value.pm10);
-
-	}
-}
 esp_err_t read_uart(uart_port_t uart_num , pm_data_t *pm) {
 	esp_err_t error_code;
 	//	pm_data_t pm ={0};
@@ -104,3 +59,57 @@ esp_err_t read_uart(uart_port_t uart_num , pm_data_t *pm) {
 	free(data);
 	return error_code;
 }
+/*
+ * @brief Initialise UART driver
+ * @param baud UART BAUD rate
+ * @param uart_no UART port number
+ * @param tx_pin UART TX pin GPIO num
+ * @param rx_pin UART RX pin GPIO num
+ * @param rx_buffer UART RX ring buffer size
+ */
+void inituart(int baud, uart_port_t uart_no, int tx_pin, int rx_pin, int rx_buffer) {
+	const uart_config_t uart_config = {
+			.baud_rate = baud,
+			.data_bits = UART_DATA_8_BITS,
+			.parity = UART_PARITY_DISABLE,
+			.stop_bits = UART_STOP_BITS_1,
+			.flow_ctrl = UART_HW_FLOWCTRL_DISABLE
+	};
+	uart_param_config(uart_no, &uart_config);
+	uart_set_pin(uart_no, tx_pin, rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+	uart_driver_install(uart_no, rx_buffer, 0, 0, NULL, 0);
+}
+
+
+
+void app_main(void)
+{
+
+	printf("init device\n");
+	esp_err_t err;
+	inituart(9600, UART_NUM_0, TXD_PIN, RXD_PIN, RX_BUF_SIZE);
+	inituart(9600, UART_NUM_1, TXD2_PIN, RXD2_PIN, RX_BUF2_SIZE);
+	while(1){
+		pm_data_t value0 = {0};
+		pm_data_t value1 = {0};
+		pm_data_t pms0Value = {0};
+		pm_data_t pms1Value = {0};
+		err = read_uart(pms0_uart, &value0);
+		if (err == ESP_OK ){
+			pms0Value.pm10 = value0.pm10;
+			pms0Value.pm1_0 = value0.pm1_0;
+			pms0Value.pm2_5 = value0.pm2_5;
+		}
+		err = read_uart(pms1_uart, &value1);
+		if (err == ESP_OK ){
+			pms1Value.pm10 = value1.pm10;
+			pms1Value.pm1_0 = value1.pm1_0;
+			pms1Value.pm2_5 = value1.pm2_5;
+		}
+
+		ESP_LOGI(TAG_PMS,"PM1.0=%d PM2.5=%d PM10=%d",pms0Value.pm1_0,pms0Value.pm2_5,pms0Value.pm10);
+		ESP_LOGI(TAG_PMS1,"PM1.0=%d PM2.5=%d PM10=%d",pms1Value.pm1_0,pms1Value.pm2_5,pms1Value.pm10);
+
+	}
+}
+
