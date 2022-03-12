@@ -15,35 +15,84 @@
 #include "esp_event.h"
 #include <main.h>
 #include "sdkconfig.h"
-
+#include "stdio.h"
+#include "common.h"
 
 #define SDA_PIN                             21
 #define SCL_PIN                             22
 #define I2C_EXAMPLE_MASTER_NUM              I2C_NUM_0
 #define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0
 #define I2C_EXAMPLE_MASTER_RX_BUF_DISABLE   0
-#define TXD_PIN (GPIO_NUM_1)
-#define RXD_PIN (GPIO_NUM_3)
+
+
+static const int PMS_BUF_SIZE = 256;
+static const int SIM7600_BUF_SIZE = 1024;
+
+#define RESET_PIN 			(GPIO_NUM_19 )
+#define TXD0_PIN (GPIO_NUM_1)
+#define RXD0_PIN (GPIO_NUM_3)
+
+#define TXD1_PIN (GPIO_NUM_25)
+#define RXD1_PIN (GPIO_NUM_26)
+
 #define TXD2_PIN (GPIO_NUM_16)
 #define RXD2_PIN (GPIO_NUM_32)
 
 #define pms0_uart UART_NUM_0
-#define pms1_uart UART_NUM_1
+#define SIM7600_uart UART_NUM_1
+#define pms1_uart UART_NUM_2
+
+//uint32_t IRAM_ATTR millis() {
+//	return xTaskGetTickCount() * portTICK_PERIOD_MS;
+//}
+int Counter = 0;                //integer to store counter values to update RTC time
+bool Rtc = true;                     //bool to update RTC time
+static const char *TAG_SIM7600 = "SIM7600";
 static const char *TAG_PMS = "PMS";
 static const char *TAG_PMS1 = "PMS1";
 static const char *TAG_RX = "RX";
+static const char *TAG_RTC = "RTC";
 bool bmp280_flag = true;
 bmp280_t dev;
 bmp280_params_t params;
 
 
+char APN[] = "www";                           //APN
+char Client_Id[] = "ez4g07";                  //Client ID
+char Username[] = "ez4g01";                   //Username
+char Password[] = "ez4g01xxx";                //Password
+char MQTT_Server[] = "104.196.168.114:1883";  //MQTT broker with port
+char *Pub_Topic = "ezioport/test";       //Topic to publish data
+char Payload[300] = "";
+char mac_id[50] = "";
+#define mqtt_data "{\"PM1\":%d,\"PM2_5\":%d,\"PM10\":%d,\"PM1_x\":%d,\"PM2.5_x\":%d,\"PM10_x\":%d,\"RH\":%.02f,\"T\":%.02f,\"P\":%.02f,\"LAT\":%.02f,\"LON\":%.02f,\"MAC\":\"%s\"}"
+
 static const char *TAG_FLASH = "FLASH";
 static const char *TAG_I2C = "I2C";
 static QueueHandle_t sensor_data_queue;
+static QueueHandle_t time_queue;     //Queue to exchange RTC time between two tasks
+//static QueueHandle_t data_queue;     //Queue to exchange Sensors data between two tasks
 
-uint32_t IRAM_ATTR millis() {
-	return xTaskGetTickCount() * portTICK_PERIOD_MS;
-}
+/*structure to exchange data between two tasks*/
+typedef struct
+{
+	uint32_t PM1_0_PMS1;
+	uint32_t PM2_5_PMS1;
+	uint32_t PM10_0_PMS1;
+	uint32_t PM1_0_PMS2;
+	uint32_t PM2_5_PMS2;
+	uint32_t PM10_0_PMS2;
+	float Humidity;
+	float Temp;
+	float Pressure;
+	float latitude;
+	float longitude;
+}Sensor_t;
+
+
+//uint32_t IRAM_ATTR millis() {
+//	return xTaskGetTickCount() * portTICK_PERIOD_MS;
+//}
 /*
  * @brief Initialise UART driver
  * @param baud UART BAUD rate
@@ -95,6 +144,7 @@ void initI2C(i2c_mode_t i2c_mode, i2c_port_t port_no, int sda_pin, int scl_pin, 
 }
 void getSensorData() {
 	while(1){
+
 		pm_data_t pms0Value = {0};
 		pm_data_t pms1Value = {0};
 		float temp = 0 , humidity = 0;
@@ -145,6 +195,7 @@ void getSensorData() {
 				}
 			}
 		}
+		Counter++;
 		if(!iteration_bmp){
 			sensorvalue.pressure = 0;
 		} else {
@@ -160,42 +211,111 @@ void getSensorData() {
 		} else {
 			sensorvalue.humidity = humidity / iteration_hum;
 		}
-//		EventBits_t pms_event_bits = xEventGroupGetBits(pms_switch_event_group);
-//		if ((pms_event_bits & PMS0_SET_BIT)!= 0){
-			if (!iteration_pms0){
-				iteration_pms0 = 1;
-			}
-			sensorvalue.pms_num[0].pm1_0 = pms0Value.pm1_0 / iteration_pms0;
-			sensorvalue.pms_num[0].pm2_5 = pms0Value.pm2_5 / iteration_pms0;
-			sensorvalue.pms_num[0].pm10 = pms0Value.pm10 / iteration_pms0;
-//		} else {
-//			sensorvalue.pms_num[0].pm1_0 = 0;
-//			sensorvalue.pms_num[0].pm2_5 = 0;
-//			sensorvalue.pms_num[0].pm10 = 0;
-//		}
-//		if ((pms_event_bits & PMS1_SET_BIT)!= 0){
-			if (!iteration_pms1){
-				iteration_pms1 = 1;
-			}
-			sensorvalue.pms_num[1].pm1_0 = pms1Value.pm1_0 / iteration_pms1;
-			sensorvalue.pms_num[1].pm2_5 = pms1Value.pm2_5 / iteration_pms1;
-			sensorvalue.pms_num[1].pm10 = pms1Value.pm10 / iteration_pms1;
-//		} else {
-//			sensorvalue.pms_num[1].pm1_0 = 0;
-//			sensorvalue.pms_num[1].pm2_5 = 0;
-//			sensorvalue.pms_num[1].pm10 = 0;
-//		}
-		ESP_LOGI(TAG_RX, "%d , %d , %d , %d , %d , %d , %f , %f ,  %f",
+		//		EventBits_t pms_event_bits = xEventGroupGetBits(pms_switch_event_group);
+		//		if ((pms_event_bits & PMS0_SET_BIT)!= 0){
+		if (!iteration_pms0){
+			iteration_pms0 = 1;
+		}
+		sensorvalue.pms_num[0].pm1_0 = pms0Value.pm1_0 / iteration_pms0;
+		sensorvalue.pms_num[0].pm2_5 = pms0Value.pm2_5 / iteration_pms0;
+		sensorvalue.pms_num[0].pm10 = pms0Value.pm10 / iteration_pms0;
+		//		} else {
+		//			sensorvalue.pms_num[0].pm1_0 = 0;
+		//			sensorvalue.pms_num[0].pm2_5 = 0;
+		//			sensorvalue.pms_num[0].pm10 = 0;
+		//		}
+		//		if ((pms_event_bits & PMS1_SET_BIT)!= 0){
+		if (!iteration_pms1){
+			iteration_pms1 = 1;
+		}
+		sensorvalue.pms_num[1].pm1_0 = pms1Value.pm1_0 / iteration_pms1;
+		sensorvalue.pms_num[1].pm2_5 = pms1Value.pm2_5 / iteration_pms1;
+		sensorvalue.pms_num[1].pm10 = pms1Value.pm10 / iteration_pms1;
+		//		} else {
+		//			sensorvalue.pms_num[1].pm1_0 = 0;
+		//			sensorvalue.pms_num[1].pm2_5 = 0;
+		//			sensorvalue.pms_num[1].pm10 = 0;
+		//		}
+		sensorvalue.latitude = GPSlat();
+		sensorvalue.longitude = GPSlog();
+
+		ESP_LOGI(TAG_RX, "%d ,%d ,%d ,%d ,%d ,%d ,%f ,%f ,%f, %f, %f ",
 				sensorvalue.pms_num[0].pm1_0, sensorvalue.pms_num[0].pm2_5, sensorvalue.pms_num[0].pm10,
 				sensorvalue.pms_num[1].pm1_0, sensorvalue.pms_num[1].pm2_5, sensorvalue.pms_num[1].pm10,
-				sensorvalue.temperature, sensorvalue.humidity,sensorvalue.pressure);
+				sensorvalue.temperature, sensorvalue.humidity,sensorvalue.pressure,sensorvalue.latitude,sensorvalue.longitude);
+		struct tm currentTime;
+		read_time(I2C_NUM_0 ,&currentTime);
+		ESP_LOGI(TAG_RTC,"%d,%d,%d,%d,%d,%d,",currentTime.tm_year,currentTime.tm_mon,currentTime.tm_mday,currentTime.tm_hour,currentTime.tm_min,currentTime.tm_sec);
+		struct tm received_time;
+		/*loop to check availability of updated time to update RTC time*/
+		if ( xQueueReceive(time_queue, &received_time, 500) ) {
+			//		        rtc.adjust(DateTime(received_time.Year, received_time.Month, received_time.Day, received_time.Hour, received_time.Minute, received_time.Second));
+			//		        Serial.println("RTC time is updated");
+			//		        Serial.printf("day,month,year,hour,min,sec,%d-%d-%d %d:%d:%d", received_time.Day, received_time.Month, received_time.Year, received_time.Hour, received_time.Minute, received_time.Second);
+			err= writetime( I2C_NUM_0, &received_time);
+			if(err!=ESP_OK){
+				ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
+			}
+
+		}
 		xQueueOverwrite(sensor_data_queue,&sensorvalue);
+	}
+}
+void sim7600(){
+	while (1) {
+		struct tm UpdatedTime;
+		bool pubfail = false;
+		/*loop to Reset SIM7600 and check network*/
+		if (PowerOn()) {
+			//	      sync_network_time();
+			/*loop to Switch ON internet*/
+			if (Internet(APN)) {
+				/*loop to connect to MQTT broker and publish data*/
+				while (!pubfail) {
+					GPSPositioning();
+					sensor_data_t received_data_mqtt;
+					/*loop to check availability of sensors data from task: Get_Sensors_data*/
+					if ( xQueueReceive(sensor_data_queue, &received_data_mqtt, 30000) ) {
+						sprintf(Payload, mqtt_data,received_data_mqtt.pms_num[0].pm1_0, received_data_mqtt.pms_num[0].pm2_5, received_data_mqtt.pms_num[0].pm10,
+								received_data_mqtt.pms_num[1].pm1_0, received_data_mqtt.pms_num[1].pm2_5, received_data_mqtt.pms_num[1].pm10,
+								received_data_mqtt.humidity, received_data_mqtt.temperature,received_data_mqtt.pressure,received_data_mqtt.latitude,received_data_mqtt.longitude,mac_id);
+						printf("Payload= %s",Payload );
+						/*loop to connect to MQTT broker*/
+						if (MQTT_Start(MQTT_Server, Username, Password, Client_Id)) {
+							/*loop to publish Sensors data*/
+							if (MQTT_Pub_data(Pub_Topic, Payload)) {
+								printf("Data published successfully");
+							}
+							else {
+								printf("pub failed ");
+								pubfail = true;
+							}
+							MQTT_Stop();
+						}
+						else
+							pubfail = true;
+					}
+					else {
+						printf("data not found");
+					}
+					/*loop to get updated time from SIM7600 and overwrite it in a queue*/
+					if ((Counter >= 1) || Rtc) {
+						getTime(&UpdatedTime);
+						printf("%d,%d,%d,%d,%d,%d",UpdatedTime.tm_year,UpdatedTime.tm_mon,UpdatedTime.tm_mday,UpdatedTime.tm_hour,UpdatedTime.tm_min,UpdatedTime.tm_sec);
+						xQueueOverwrite(time_queue, &UpdatedTime);
+						Rtc = false;
+						Counter = 0;
+					}
+				}
+			}
+		}
+		else
+			GPSPositioning();
 	}
 }
 
 void app_main() {
 	esp_err_t ret;
-
 	// Initialise flash in esp32
 	ret = nvs_flash_init();
 	if ( ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND ) {
@@ -203,8 +323,21 @@ void app_main() {
 		ret = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(ret);
-	inituart(9600, UART_NUM_0, TXD_PIN, RXD_PIN, RX_BUF_SIZE);
-	inituart(9600, UART_NUM_1, TXD2_PIN, RXD2_PIN, RX_BUF2_SIZE);
+	uint8_t mac_addr[8]  = {0};
+	uint8_t mac[6];
+	ret = esp_efuse_mac_get_default(mac);
+	if (ret != ESP_OK) {
+		ESP_LOGI(TAG_SIM7600, "Did not get the mac ");
+	} else {
+		esp_base_mac_addr_set(mac);
+	}
+	esp_base_mac_addr_get(mac_addr);
+	sprintf(mac_id, "%02x:%02x:%02x:%02x:%02x:%02x", mac_addr[0],
+			mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
+	inituart(9600, pms0_uart, TXD0_PIN, RXD0_PIN, PMS_BUF_SIZE);
+	inituart(9600, pms1_uart, TXD2_PIN, RXD2_PIN, PMS_BUF_SIZE);
+	inituart(115200, SIM7600_uart, TXD1_PIN, RXD1_PIN, SIM7600_BUF_SIZE);
 	sdCard_pins_config_t  pin = {
 			.miso_pin = 19,
 			.mosi_pin = 23,
@@ -227,48 +360,8 @@ void app_main() {
 		}
 	}
 	sensor_data_queue = xQueueCreate(1,sizeof(sensor_data_t));
-//	char data[] = "bc";
-//	char filename[] = "abc";
-//
-//	while(1){
-//		float temp =0,hum=0;
-//		float bmpTemp = 0,bmpPress = 0;
-//		time_t timeVal =0;
-//		ret = read_time(I2C_NUM_0, &timeVal);
-//		ESP_LOGI(TAG_FLASH,"current time is %ld %s", timeVal,esp_err_to_name(ret));
-//		ret = ht21d_read_temperature(I2C_NUM_0, &temp);
-//		ESP_LOGI(TAG_FLASH,"current temp is %f %s", temp,esp_err_to_name(ret));
-//		ret = ht21d_read_humidity(I2C_NUM_0, &hum);
-//		ESP_LOGI(TAG_FLASH,"current humidity is %f %s", hum,esp_err_to_name(ret));
-//		if (bmp280_flag){
-//			ret = bmp280_read_float(I2C_NUM_0, &dev, &bmpTemp, &bmpPress);
-//			ESP_LOGI(TAG_FLASH,"current bmp temp is %f and pressure is %f %s", bmpTemp, bmpPress,esp_err_to_name(ret));
-//		}
-//		pm_data_t value0 = {0};
-//		pm_data_t value1 = {0};
-//		pm_data_t pms0Value = {0};
-//		pm_data_t pms1Value = {0};
-//		ret = read_pms(pms0_uart, &value0);
-//		if (ret == ESP_OK ){
-//			pms0Value.pm10 = value0.pm10;
-//			pms0Value.pm1_0 = value0.pm1_0;
-//			pms0Value.pm2_5 = value0.pm2_5;
-//		}
-//		ret = read_pms(pms1_uart, &value1);
-//		if (ret == ESP_OK ){
-//			pms1Value.pm10 = value1.pm10;
-//			pms1Value.pm1_0 = value1.pm1_0;
-//			pms1Value.pm2_5 = value1.pm2_5;
-//		}
-//		ESP_LOGI(TAG_PMS,"PM1.0=%d PM2.5=%d PM10=%d",pms0Value.pm1_0,pms0Value.pm2_5,pms0Value.pm10);
-//		ESP_LOGI(TAG_PMS1,"PM1.0=%d PM2.5=%d PM10=%d",pms1Value.pm1_0,pms1Value.pm2_5,pms1Value.pm10);
-//
-//
-//		ret = write_sd (data, filename);
-//		ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(ret));
-//		vTaskDelay(10000/portTICK_RATE_MS);
-//	}
-	while(1){
-		 getSensorData();
-	}
+	time_queue = xQueueCreate(1,sizeof(struct tm));
+	/*  Creates getSensorData with a stack size of 4096 bytes at priority 4 */
+	xTaskCreate(getSensorData, "get_sensor_data", 1024*4, NULL, 4, NULL);
+	xTaskCreate(sim7600,"SIM7600",8192,NULL,1,NULL);
 }

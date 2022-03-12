@@ -12,12 +12,16 @@
 #include "BMP280.h"
 #include "SDCARD.h"
 #include"pms7003.h"
+#include "SIM7600.h"
+
 
 typedef struct {
 	pm_data_t pms_num[2];
 	float temperature;
 	float humidity;
 	float pressure;
+	float latitude;
+	float longitude;
 }sensor_data_t;
 
 typedef struct {

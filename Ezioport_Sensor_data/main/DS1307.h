@@ -15,7 +15,7 @@
 
 #define DS1307_ADDRESS                           0x68        // I2C address of DS1307
 
-esp_err_t read_time(i2c_port_t i2c_num,time_t *currentTime);
+esp_err_t read_time(i2c_port_t i2c_num, struct tm *currentTime);
 esp_err_t writetime(i2c_port_t i2c_num,  struct tm *newTime);
 
 #endif /* MAIN_DS1307_H_ */
