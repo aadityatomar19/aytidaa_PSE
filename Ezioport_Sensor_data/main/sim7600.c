@@ -16,10 +16,9 @@ float Lat = 0;
 float Log = 0;
 float Latdata=0;
 float logdata=0;
+#define RESET_PIN GPIO_NUM_13
+#define GPIO_OUTPUT_PIN (1ULL << RESET_PIN)
 
-//uint32_t IRAM_ATTR millis() {
-//	return xTaskGetTickCount() * portTICK_PERIOD_MS;
-//}
 void sendATcmd(uart_port_t uart_controller, char* text){
 	uart_write_bytes(uart_controller, text, strlen(text));
 	return;
@@ -50,7 +49,7 @@ char* read_line(uart_port_t uart_controller) {
 }
 
 void string_len(char* line){
-		if(strlen(line)>1){
+	if(strlen(line)>1){
 		printf("%s",line);
 	}
 }
@@ -145,11 +144,31 @@ int sendATcommand3(char* ATcommand, char* expected_answer,unsigned int timeout,c
 	return answer;
 }
 void Soft_Reset(){
-	sendATcommand("AT+CRESET", "PB DONE", 20000);
+	sendATcommand("AT+CRESET", "PB DONE", 30000);
+}
+void Hard_Reset()
+{
+	gpio_set_level(RESET_PIN,1);
+	vTaskDelay(1000 / portTICK_RATE_MS);
+	gpio_set_level(RESET_PIN,0);
+	vTaskDelay(1000 / portTICK_RATE_MS);
 }
 
 bool PowerOn()
 {
+	gpio_config_t io_conf;
+	//disable interrupt
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+	//set as output mode
+	io_conf.mode = GPIO_MODE_OUTPUT;
+	//bit mask of the pins that you want to set,e.g.GPIO18/19
+	io_conf.pin_bit_mask = GPIO_OUTPUT_PIN;
+	//disable pull-down mode
+	io_conf.pull_down_en = 0;
+	//disable pull-up mode
+	io_conf.pull_up_en = 0;
+	//configure GPIO with the given settings
+	gpio_config(&io_conf);
 	//  Reset_key=Rst;
 	//  pinMode(Reset_key, OUTPUT);
 	unsigned long previous;
@@ -161,8 +180,8 @@ bool PowerOn()
 	if (answer == 0)
 	{
 		printf("Starting up...\n");
-		//  Hard_Reset();
-		vTaskDelay(20000/portTICK_RATE_MS);
+		  Hard_Reset();
+		vTaskDelay(30000/portTICK_RATE_MS);
 		previous = millis();
 		while ((answer == 0) && ((millis() - previous) < 10000))
 		{ // Send AT every two seconds and wait for the answer

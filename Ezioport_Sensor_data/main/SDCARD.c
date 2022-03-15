@@ -67,7 +67,7 @@ esp_err_t init_sd(sdCard_pins_config_t *pins) {
 esp_err_t write_sd(char *sd_data,char *filename) {
 	ESP_LOGI(TAG_SD, "Opening file");
 	char *filePath = NULL;
-	asprintf(&filePath,"%s/%s.txt",MOUNT_POINT,filename);
+	asprintf(&filePath,"%s/%s.csv",MOUNT_POINT,filename);
 	ESP_LOGI(TAG_SD, "filename %s",filePath);
 	FILE* f = fopen(filePath,"a");
 	if (f == NULL) {

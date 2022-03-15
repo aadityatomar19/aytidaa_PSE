@@ -25,6 +25,22 @@ typedef struct {
 }sensor_data_t;
 
 typedef struct {
+	pm_data_t pms[2];
+	float temperature;
+	float humidity;
+	float pressure;
+	float latitude;
+	float longitude;
+	int Year;
+	int Month;
+	int Day;
+	int Hour;
+	int Minute;
+	int Second;
+	char *MAC;
+}SD_sensor_t;
+
+typedef struct {
 	pm_data_t pms_num[2];
 	float temp;
 	float hum;

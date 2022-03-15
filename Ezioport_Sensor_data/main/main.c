@@ -24,6 +24,7 @@
 #define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0
 #define I2C_EXAMPLE_MASTER_RX_BUF_DISABLE   0
 
+#define MOUNT_POINT "/sdcard"
 
 static const int PMS_BUF_SIZE = 256;
 static const int SIM7600_BUF_SIZE = 1024;
@@ -42,36 +43,51 @@ static const int SIM7600_BUF_SIZE = 1024;
 #define SIM7600_uart UART_NUM_1
 #define pms1_uart UART_NUM_2
 
-//uint32_t IRAM_ATTR millis() {
-//	return xTaskGetTickCount() * portTICK_PERIOD_MS;
-//}
-int Counter = 0;                //integer to store counter values to update RTC time
-bool Rtc = true;                     //bool to update RTC time
+#define DEFAULT_TIME 3600
+long pms0_time = DEFAULT_TIME;
+long pms1_time = DEFAULT_TIME;
+long b_pms_time = DEFAULT_TIME;
+// DEVICE STATUS LED PIN
+#define LED_GPIO_PIN GPIO_NUM_32
+#define PMS0_SET_PIN GPIO_NUM_27
+#define PMS1_SET_PIN GPIO_NUM_33
+#define GPIO_OUTPUT_PIN_SEL0 (1ULL << LED_GPIO_PIN)
+#define GPIO_OUTPUT_PIN_SEL1 (1ULL << PMS0_SET_PIN)
+#define GPIO_OUTPUT_PIN_SEL2 (1ULL << PMS1_SET_PIN)
 static const char *TAG_SIM7600 = "SIM7600";
-static const char *TAG_PMS = "PMS";
-static const char *TAG_PMS1 = "PMS1";
 static const char *TAG_RX = "RX";
 static const char *TAG_RTC = "RTC";
+static const char *TAG_SD = "SD";
+static const char *TAG_FLASH = "FLASH";
+static const char *TAG_I2C = "I2C";
+static const char *TAG_CONFIG = "CONFIG";
+
 bool bmp280_flag = true;
 bmp280_t dev;
 bmp280_params_t params;
 
-
+int interval = 9000;
+int Counter = 0;                //integer to store counter values to update RTC time
+bool Rtc = true;                     //bool to update RTC time
+bool Start=true;					//bool to write legendsin file
+int dd=0;
 char APN[] = "www";                           //APN
 char Client_Id[] = "ez4g07";                  //Client ID
 char Username[] = "ez4g01";                   //Username
 char Password[] = "ez4g01xxx";                //Password
 char MQTT_Server[] = "104.196.168.114:1883";  //MQTT broker with port
-char *Pub_Topic = "ezioport/test";       //Topic to publish data
+char *Pub_Topic = "ezioport/drnaveen";       //Topic to publish data
 char Payload[300] = "";
 char mac_id[50] = "";
-#define mqtt_data "{\"PM1\":%d,\"PM2_5\":%d,\"PM10\":%d,\"PM1_x\":%d,\"PM2.5_x\":%d,\"PM10_x\":%d,\"RH\":%.02f,\"T\":%.02f,\"P\":%.02f,\"LAT\":%.02f,\"LON\":%.02f,\"MAC\":\"%s\"}"
+#define mqtt_data "{\"PM1\":%d,\"PM2.5\":%d,\"PM10\":%d,\"PM1_x\":%d,\"PM2.5_x\":%d,\"PM10_x\":%d,\"RH\":%.02f,\"T\":%.02f,\"P\":%.02f,\"LAT\":%.02f,\"LON\":%.02f,\"MAC\":\"%s\"}"
+char *datalegend =   "PM1,PM2.5,PM10,PM1X,PM2.5X,PM10X,Humidity,Temperature,Pressure,LAT,LONG,ts,MAC\n";   // Legends to write into file
 
-static const char *TAG_FLASH = "FLASH";
-static const char *TAG_I2C = "I2C";
 static QueueHandle_t sensor_data_queue;
+static QueueHandle_t SD_data_queue;
 static QueueHandle_t time_queue;     //Queue to exchange RTC time between two tasks
-//static QueueHandle_t data_queue;     //Queue to exchange Sensors data between two tasks
+static const int PMS0_SET_BIT = BIT0;
+static const int PMS1_SET_BIT = BIT1;
+static EventGroupHandle_t pms_switch_event_group;
 
 /*structure to exchange data between two tasks*/
 typedef struct
@@ -88,11 +104,228 @@ typedef struct
 	float latitude;
 	float longitude;
 }Sensor_t;
+void read_config(long *pms0_t, long *pms1_t, long *b_Pms_t);
+/*
+ * @brief initialise gpio pins for led and push button
+ */
+void init_gpio() {
+
+	gpio_config_t io_conf;
+	//disable interrupt
+	io_conf.intr_type = GPIO_INTR_DISABLE;
+	//set as output mode
+	io_conf.mode = GPIO_MODE_OUTPUT;
+	//bit mask of the pins that you want to set,e.g.GPIO18/19
+	io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL0;
+	//disable pull-down mode
+	io_conf.pull_down_en = 0;
+	//disable pull-up mode
+	io_conf.pull_up_en = 0;
+	//configure GPIO with the given settings
+	gpio_config(&io_conf);
 
 
-//uint32_t IRAM_ATTR millis() {
-//	return xTaskGetTickCount() * portTICK_PERIOD_MS;
-//}
+	gpio_config_t io_conf2;
+	//disable interrupt
+	io_conf2.intr_type = GPIO_INTR_DISABLE;
+	//set as output mode
+	io_conf2.mode = GPIO_MODE_OUTPUT;
+	//bit mask of the pins that you want to set,e.g.GPIO18/19
+	io_conf2.pin_bit_mask = GPIO_OUTPUT_PIN_SEL1;
+	//disable pull-down mode
+	io_conf2.pull_down_en = 0;
+	//disable pull-up mode
+	io_conf2.pull_up_en = 0;
+	//configure GPIO with the given settings
+	gpio_config(&io_conf2);
+
+	gpio_config_t io_conf3;
+	//disable interrupt
+	io_conf3.intr_type = GPIO_INTR_DISABLE;
+	//set as output mode
+	io_conf3.mode = GPIO_MODE_OUTPUT;
+	//bit mask of the pins that you want to set,e.g.GPIO18/19
+	io_conf3.pin_bit_mask = GPIO_OUTPUT_PIN_SEL2;
+	//disable pull-down mode
+	io_conf3.pull_down_en = 0;
+	//disable pull-up mode
+	io_conf3.pull_up_en = 0;
+	//configure GPIO with the given settings
+	gpio_config(&io_conf3);
+}
+/*
+ * @brief Switching PMS5003 on/off by pulling up/down set pin of pms
+ * */
+void pms_toggle(){
+	int i = 0;
+	ESP_LOGI(TAG_CONFIG,"Toggle time are %ld,  %ld,  %ld", pms0_time, pms1_time, b_pms_time);
+	while (1){
+		if (i == 0){
+			i= 1;
+			gpio_set_level(PMS1_SET_PIN,0);
+			gpio_set_level(PMS0_SET_PIN,1);
+			xEventGroupClearBits(pms_switch_event_group,PMS1_SET_BIT);
+			xEventGroupSetBits(pms_switch_event_group,PMS0_SET_BIT);
+			//			xEventGroupClearBits(pms_switch_event_group,BOTH_PMS_SET_BIT);
+			vTaskDelay(pms0_time*1000 / portTICK_RATE_MS);
+
+		}
+		else if ( i ==1){
+			i= 2;
+			gpio_set_level(PMS0_SET_PIN,0);
+			gpio_set_level(PMS1_SET_PIN,1);
+			xEventGroupClearBits(pms_switch_event_group,PMS0_SET_BIT);
+			xEventGroupSetBits(pms_switch_event_group,PMS1_SET_BIT);
+			vTaskDelay(pms1_time*1000 / portTICK_RATE_MS);
+
+			//			xEventGroupClearBits(pms_switch_event_group,BOTH_PMS_SET_BIT);
+		}
+		else {
+			i = 0 ;
+			gpio_set_level(PMS0_SET_PIN,1);
+			gpio_set_level(PMS1_SET_PIN,1);
+			//			xEventGroupSetBits(pms_switch_event_group,BOTH_PMS_SET_BIT);
+			xEventGroupSetBits(pms_switch_event_group,PMS0_SET_BIT);
+			xEventGroupSetBits(pms_switch_event_group,PMS1_SET_BIT);
+			vTaskDelay(b_pms_time*1000 / portTICK_RATE_MS);
+
+		}
+		vTaskDelay(50 / portTICK_RATE_MS);
+
+	}
+}
+/*
+ * @brief Function to read both pms5003's run time in 3 different configuration
+ *        i.e. Only PMS1 run time , PMS2 run time and Both PMS simultaneous run time
+ *        If config file doesn't exist or time is invalid then pms configurationwwill be set to
+ *        default time i.e 3600 sec
+ * @param    *pms0_time,*pms1_time,*both_pms_time  pointer to save configuration time
+ */
+void read_config(long *pms0_time, long *pms1_time, long *both_pms_time ){
+	char *pms0_time_string = (char*)malloc(sizeof(char));
+	char *pms1_time_string = (char*)malloc(sizeof(char));
+	char *both_pms_time_string = (char*)malloc(sizeof(char));
+
+	FILE* config_file = fopen(MOUNT_POINT"/config.txt","r");
+	if (config_file == NULL) {
+		ESP_LOGE(TAG_SD, "Failed to open file for reading");
+		return;
+	}
+	int i = 0;
+	int tot = 0;
+	char line[4][100];
+	while(fgets(line[i],sizeof(line[i]),config_file) != NULL){
+		char* pos = strchr(line[i],'\r');
+		if (pos){
+			*pos = '\0';
+		}
+		i++;
+	}
+	fclose(config_file);
+	tot = i;
+	for(i=0;i<tot;i++){
+		char* token;
+		char* token1;
+		char* temp_var;
+		char pos[200] ;
+		char *eptr;
+		strcpy(pos,line[i]);
+
+		if( strncmp("PMS1_ON_TIME :",line[i],14)==0)
+		{
+
+			token = strtok(pos,";");
+			temp_var = token;
+			token1 = strtok(temp_var,":");
+
+			while(token1 !=0){
+				temp_var = token1;
+				token1 = strtok(0,":");
+			}
+			strcpy(pms0_time_string ,temp_var);
+			*pms0_time = strtol(pms0_time_string, &eptr, 10);
+			if (*pms0_time == 0){
+				if (strcmp(eptr, pms0_time_string) == 0){
+					ESP_LOGI(TAG_SD,"HELLO HELLO HELLO !!!!! error occurred");
+					*pms0_time = DEFAULT_TIME;
+				}
+				if (errno ==EINVAL){
+					ESP_LOGI(TAG_SD,"Conversion error occurred: %d", errno);
+					*pms0_time = DEFAULT_TIME;
+				}
+
+			}
+			if ((*pms0_time == LONG_MIN) || (*pms0_time == LONG_MAX)){
+				if (errno == ERANGE){
+					ESP_LOGI(TAG_SD,"The value provided was out of range");
+					*pms0_time = DEFAULT_TIME;
+				}
+			}
+			ESP_LOGI(TAG_SD,"PMS1_ON_TIME variable %s  >> %s", temp_var , pms0_time_string);
+
+		}
+		else if (strncmp("PMS2_ON_TIME :",line[i],14)==0){
+			token = strtok(pos,";");
+			temp_var = token;
+			token1 = strtok(temp_var,":");
+
+			while(token1 !=0){
+				temp_var = token1;
+				token1 = strtok(0,":");
+			}
+			strcpy(pms1_time_string,temp_var);
+			*pms1_time = strtol(pms1_time_string, &eptr, 10);
+			if (*pms1_time == 0){
+				if (strcmp(eptr, pms1_time_string) == 0){
+					ESP_LOGI(TAG_SD,"HELLO HELLO HELLO !!!!! error occurred");
+					*pms1_time = DEFAULT_TIME;
+				}
+				else if (errno ==EINVAL){
+					ESP_LOGI(TAG_SD,"Conversion error occurred: %d", errno);
+					*pms1_time = DEFAULT_TIME;
+				}
+			}
+			if ((*pms1_time == LONG_MIN) || (*pms1_time == LONG_MAX)){
+				if (errno == ERANGE){
+					ESP_LOGI(TAG_SD,"The value provided was out of range");
+					*pms1_time = DEFAULT_TIME;
+				}
+			}
+
+			ESP_LOGI(TAG_SD,"PMS2_ON_TIME variable %s >> %s ", temp_var,pms1_time_string);
+		}
+		else if (strncmp("BOTH_PMS_ON_TIME :",line[i],18)==0){
+			token = strtok(pos,";");
+			temp_var = token;
+			token1 = strtok(temp_var,":");
+
+			while(token1 !=0){
+				temp_var = token1;
+				token1 = strtok(0,":");
+			}
+			strcpy(both_pms_time_string,temp_var) ;
+			*both_pms_time = strtol(both_pms_time_string, &eptr, 10);
+			if (*both_pms_time == 0){
+				ESP_LOGI(TAG_SD,"Conversion error occurred: %s", strerror(errno));
+				if (strcmp(eptr, both_pms_time_string) == 0){
+					ESP_LOGI(TAG_SD,"HELLO HELLO HELLO !!!!! error occurred");
+					*both_pms_time = DEFAULT_TIME;
+				}
+				else if (errno ==EINVAL){
+					ESP_LOGI(TAG_SD,"Conversion error occurred: %d", errno);
+					*both_pms_time = DEFAULT_TIME;
+				}
+			}
+			if ((*both_pms_time == LONG_MIN) || (*both_pms_time == LONG_MAX)){
+				if (errno == ERANGE){
+					ESP_LOGI(TAG_SD,"The value provided was out of range");
+					*both_pms_time = DEFAULT_TIME;
+				}
+			}
+			ESP_LOGI(TAG_SD,"BOTH_PMS_ON_TIME %s >> %s ", temp_var,both_pms_time_string);
+		}
+	}
+}
 /*
  * @brief Initialise UART driver
  * @param baud UART BAUD rate
@@ -144,7 +377,7 @@ void initI2C(i2c_mode_t i2c_mode, i2c_port_t port_no, int sda_pin, int scl_pin, 
 }
 void getSensorData() {
 	while(1){
-
+		ESP_LOGI(TAG_RX, "FREE INTERNAL HEAP MQTT destroy end %d", esp_get_free_internal_heap_size());
 		pm_data_t pms0Value = {0};
 		pm_data_t pms1Value = {0};
 		float temp = 0 , humidity = 0;
@@ -158,7 +391,8 @@ void getSensorData() {
 		esp_err_t err;
 		unsigned long previousmillis = millis();
 		sensor_data_t sensorvalue = {0};
-		while ( millis() - previousmillis <= 10000 ) {
+		ESP_LOGI(TAG_RX,"TIME MIllis %d",millis());
+		while ( millis() - previousmillis <= interval ) {
 			float temperat = 0;
 			float humid = 0;
 			pm_data_t value0 = {0};
@@ -194,6 +428,21 @@ void getSensorData() {
 					press += bmpPress;
 				}
 			}
+			sensorvalue.latitude = GPSlat();
+			sensorvalue.longitude = GPSlog();
+			struct tm received_time;
+				/*loop to check availability of updated time to update RTC time*/
+				if ( xQueueReceive(time_queue, &received_time, 100) ) {
+					received_time.tm_year -=1900;
+					received_time.tm_mon -= 1;
+					err= writetime( I2C_NUM_0, &received_time);
+					if(err!=ESP_OK){
+						ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
+					}
+					else{
+						ESP_LOGI(TAG_RTC,"RTC is updated");
+					}
+				}
 		}
 		Counter++;
 		if(!iteration_bmp){
@@ -211,54 +460,111 @@ void getSensorData() {
 		} else {
 			sensorvalue.humidity = humidity / iteration_hum;
 		}
-		//		EventBits_t pms_event_bits = xEventGroupGetBits(pms_switch_event_group);
-		//		if ((pms_event_bits & PMS0_SET_BIT)!= 0){
-		if (!iteration_pms0){
-			iteration_pms0 = 1;
-		}
-		sensorvalue.pms_num[0].pm1_0 = pms0Value.pm1_0 / iteration_pms0;
-		sensorvalue.pms_num[0].pm2_5 = pms0Value.pm2_5 / iteration_pms0;
-		sensorvalue.pms_num[0].pm10 = pms0Value.pm10 / iteration_pms0;
-		//		} else {
-		//			sensorvalue.pms_num[0].pm1_0 = 0;
-		//			sensorvalue.pms_num[0].pm2_5 = 0;
-		//			sensorvalue.pms_num[0].pm10 = 0;
-		//		}
-		//		if ((pms_event_bits & PMS1_SET_BIT)!= 0){
-		if (!iteration_pms1){
-			iteration_pms1 = 1;
-		}
-		sensorvalue.pms_num[1].pm1_0 = pms1Value.pm1_0 / iteration_pms1;
-		sensorvalue.pms_num[1].pm2_5 = pms1Value.pm2_5 / iteration_pms1;
-		sensorvalue.pms_num[1].pm10 = pms1Value.pm10 / iteration_pms1;
-		//		} else {
-		//			sensorvalue.pms_num[1].pm1_0 = 0;
-		//			sensorvalue.pms_num[1].pm2_5 = 0;
-		//			sensorvalue.pms_num[1].pm10 = 0;
-		//		}
-		sensorvalue.latitude = GPSlat();
-		sensorvalue.longitude = GPSlog();
-
-		ESP_LOGI(TAG_RX, "%d ,%d ,%d ,%d ,%d ,%d ,%f ,%f ,%f, %f, %f ",
-				sensorvalue.pms_num[0].pm1_0, sensorvalue.pms_num[0].pm2_5, sensorvalue.pms_num[0].pm10,
-				sensorvalue.pms_num[1].pm1_0, sensorvalue.pms_num[1].pm2_5, sensorvalue.pms_num[1].pm10,
-				sensorvalue.temperature, sensorvalue.humidity,sensorvalue.pressure,sensorvalue.latitude,sensorvalue.longitude);
-		struct tm currentTime;
-		read_time(I2C_NUM_0 ,&currentTime);
-		ESP_LOGI(TAG_RTC,"%d,%d,%d,%d,%d,%d,",currentTime.tm_year,currentTime.tm_mon,currentTime.tm_mday,currentTime.tm_hour,currentTime.tm_min,currentTime.tm_sec);
-		struct tm received_time;
-		/*loop to check availability of updated time to update RTC time*/
-		if ( xQueueReceive(time_queue, &received_time, 500) ) {
-			//		        rtc.adjust(DateTime(received_time.Year, received_time.Month, received_time.Day, received_time.Hour, received_time.Minute, received_time.Second));
-			//		        Serial.println("RTC time is updated");
-			//		        Serial.printf("day,month,year,hour,min,sec,%d-%d-%d %d:%d:%d", received_time.Day, received_time.Month, received_time.Year, received_time.Hour, received_time.Minute, received_time.Second);
-			err= writetime( I2C_NUM_0, &received_time);
-			if(err!=ESP_OK){
-				ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
+		EventBits_t pms_event_bits = xEventGroupGetBits(pms_switch_event_group);
+		if ((pms_event_bits & PMS0_SET_BIT)!= 0){
+			if (!iteration_pms0){
+				iteration_pms0 = 1;
 			}
-
+			sensorvalue.pms_num[0].pm1_0 = pms0Value.pm1_0 / iteration_pms0;
+			sensorvalue.pms_num[0].pm2_5 = pms0Value.pm2_5 / iteration_pms0;
+			sensorvalue.pms_num[0].pm10 = pms0Value.pm10 / iteration_pms0;
+		} else {
+			sensorvalue.pms_num[0].pm1_0 = 0;
+			sensorvalue.pms_num[0].pm2_5 = 0;
+			sensorvalue.pms_num[0].pm10 = 0;
+		}
+		if ((pms_event_bits & PMS1_SET_BIT)!= 0){
+			if (!iteration_pms1){
+				iteration_pms1 = 1;
+			}
+			sensorvalue.pms_num[1].pm1_0 = pms1Value.pm1_0 / iteration_pms1;
+			sensorvalue.pms_num[1].pm2_5 = pms1Value.pm2_5 / iteration_pms1;
+			sensorvalue.pms_num[1].pm10 = pms1Value.pm10 / iteration_pms1;
+		} else {
+			sensorvalue.pms_num[1].pm1_0 = 0;
+			sensorvalue.pms_num[1].pm2_5 = 0;
+			sensorvalue.pms_num[1].pm10 = 0;
 		}
 		xQueueOverwrite(sensor_data_queue,&sensorvalue);
+		ESP_LOGI(TAG_RX,"TIME MIllis of data write%d",millis());
+		struct tm currentTime={0};
+		SD_sensor_t SD_Data={0};
+		read_time(I2C_NUM_0 ,&currentTime);
+		time_t systime = mktime(&currentTime);
+		ESP_LOGI(TAG_RTC,"Current time is %ld",  systime);
+		currentTime.tm_year += 1900;
+		currentTime.tm_mon += 1;
+		struct timeval Esptime;
+		Esptime.tv_sec = systime;
+		Esptime.tv_usec = 0;
+		sntp_sync_time(&Esptime);
+				SD_Data.pms[0].pm1_0=sensorvalue.pms_num[0].pm1_0;
+				SD_Data.pms[0].pm2_5=sensorvalue.pms_num[0].pm2_5;
+				SD_Data.pms[0].pm10=sensorvalue.pms_num[0].pm10;
+				SD_Data.pms[1].pm1_0=sensorvalue.pms_num[1].pm1_0;
+				SD_Data.pms[1].pm2_5=sensorvalue.pms_num[1].pm2_5;
+				SD_Data.pms[1].pm10=sensorvalue.pms_num[1].pm10;
+				SD_Data.humidity=sensorvalue.humidity;
+				SD_Data.temperature=sensorvalue.temperature;
+				SD_Data.pressure=sensorvalue.pressure;
+				SD_Data.latitude=sensorvalue.latitude;
+				SD_Data.longitude=sensorvalue.longitude;
+				SD_Data.Day=currentTime.tm_mday;
+				SD_Data.Month=currentTime.tm_mon;
+				SD_Data.Year=currentTime.tm_year;
+				SD_Data.Hour=currentTime.tm_hour;
+				SD_Data.Minute=currentTime.tm_min;
+				SD_Data.Second=currentTime.tm_sec;
+				SD_Data.MAC=mac_id;
+		xQueueOverwrite(SD_data_queue,&SD_Data);
+		ESP_LOGI(TAG_RX,"TIME MIllis after loop %d",millis());
+	}
+}
+void Data_Logger(){
+	esp_err_t err;
+	SD_sensor_t Data;
+	while(1){
+		if ( xQueueReceive(SD_data_queue, &Data, interval)) {
+			ESP_LOGI(TAG_RTC,"%d,%d,%d,%d,%d,%d,",Data.Year,Data.Month,Data.Day,Data.Hour,Data.Minute,Data.Second);
+			char dtfilename[50] = "";
+			char filename[50] = "";
+			char data[200] = "";
+			sprintf(data,"%d,%d,%d,%d,%d,%d,%f,%f,%f,%f,%f,%d-%d-%d %d:%d:%d,%s",
+					Data.pms[0].pm1_0, Data.pms[0].pm2_5, Data.pms[0].pm10,
+					Data.pms[1].pm1_0, Data.pms[1].pm2_5, Data.pms[1].pm10,
+					Data.temperature, Data.humidity,Data.pressure,Data.latitude,
+					Data.longitude,Data.Day,Data.Month,Data.Year,
+					Data.Hour,Data.Minute,Data.Second,mac_id);
+			ESP_LOGI(TAG_RX,"data: %s",data);
+			sprintf(dtfilename,"%02d%02d%04d",Data.Day,Data.Month,Data.Year);
+			sprintf(filename,"%s/%02d%02d%04d.csv",MOUNT_POINT,Data.Day,Data.Month,Data.Year);
+			if ((Data.Day != dd) || Start) {
+				dd=Data.Day;
+				Start=false;
+				FILE* f = fopen(filename,"r");
+				if (f == NULL) {
+					ESP_LOGI(TAG_SD, "Failed to open file for writing legends");
+					ESP_LOGI(TAG_SD, "writing legends");
+					err = write_sd (datalegend, dtfilename);
+					if(err==ESP_OK){
+						ESP_LOGE(TAG_SD, "legends updated");
+					}
+					ESP_LOGI(TAG_SD, "%s ",esp_err_to_name(err));
+				}else {
+					err = write_sd (data, dtfilename);
+					if(err==ESP_OK){
+						ESP_LOGE(TAG_SD, "data updated");
+					}
+					ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
+				}
+			}else {
+				err = write_sd (data, dtfilename);
+				if(err==ESP_OK){
+					ESP_LOGE(TAG_SD, "data updated");
+				}
+				ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
+			}
+		}
 	}
 }
 void sim7600(){
@@ -267,15 +573,15 @@ void sim7600(){
 		bool pubfail = false;
 		/*loop to Reset SIM7600 and check network*/
 		if (PowerOn()) {
-			//	      sync_network_time();
 			/*loop to Switch ON internet*/
 			if (Internet(APN)) {
 				/*loop to connect to MQTT broker and publish data*/
 				while (!pubfail) {
+					ESP_LOGI(TAG_SIM7600, "FREE INTERNAL HEAP MQTT destroy end %d", esp_get_free_internal_heap_size());
 					GPSPositioning();
 					sensor_data_t received_data_mqtt;
 					/*loop to check availability of sensors data from task: Get_Sensors_data*/
-					if ( xQueueReceive(sensor_data_queue, &received_data_mqtt, 30000) ) {
+					if ( xQueueReceive(sensor_data_queue, &received_data_mqtt, interval) ) {
 						sprintf(Payload, mqtt_data,received_data_mqtt.pms_num[0].pm1_0, received_data_mqtt.pms_num[0].pm2_5, received_data_mqtt.pms_num[0].pm10,
 								received_data_mqtt.pms_num[1].pm1_0, received_data_mqtt.pms_num[1].pm2_5, received_data_mqtt.pms_num[1].pm10,
 								received_data_mqtt.humidity, received_data_mqtt.temperature,received_data_mqtt.pressure,received_data_mqtt.latitude,received_data_mqtt.longitude,mac_id);
@@ -299,9 +605,9 @@ void sim7600(){
 						printf("data not found");
 					}
 					/*loop to get updated time from SIM7600 and overwrite it in a queue*/
-					if ((Counter >= 1) || Rtc) {
+					if ((Counter >= 100) || Rtc) {
 						getTime(&UpdatedTime);
-						printf("%d,%d,%d,%d,%d,%d",UpdatedTime.tm_year,UpdatedTime.tm_mon,UpdatedTime.tm_mday,UpdatedTime.tm_hour,UpdatedTime.tm_min,UpdatedTime.tm_sec);
+						printf("%d,%d,%d,%d,%d,%d",(UpdatedTime.tm_year),(UpdatedTime.tm_mon),UpdatedTime.tm_mday,UpdatedTime.tm_hour,UpdatedTime.tm_min,UpdatedTime.tm_sec);
 						xQueueOverwrite(time_queue, &UpdatedTime);
 						Rtc = false;
 						Counter = 0;
@@ -323,6 +629,7 @@ void app_main() {
 		ret = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(ret);
+	init_gpio();
 	uint8_t mac_addr[8]  = {0};
 	uint8_t mac[6];
 	ret = esp_efuse_mac_get_default(mac);
@@ -334,7 +641,7 @@ void app_main() {
 	esp_base_mac_addr_get(mac_addr);
 	sprintf(mac_id, "%02x:%02x:%02x:%02x:%02x:%02x", mac_addr[0],
 			mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-
+	pms_switch_event_group = xEventGroupCreate();
 	inituart(9600, pms0_uart, TXD0_PIN, RXD0_PIN, PMS_BUF_SIZE);
 	inituart(9600, pms1_uart, TXD2_PIN, RXD2_PIN, PMS_BUF_SIZE);
 	inituart(115200, SIM7600_uart, TXD1_PIN, RXD1_PIN, SIM7600_BUF_SIZE);
@@ -359,9 +666,16 @@ void app_main() {
 			bmp280_flag = false;
 		}
 	}
+	read_config(&pms0_time, &pms1_time, &b_pms_time);
+
 	sensor_data_queue = xQueueCreate(1,sizeof(sensor_data_t));
 	time_queue = xQueueCreate(1,sizeof(struct tm));
+	SD_data_queue=xQueueCreate(1,sizeof(SD_sensor_t));
+
 	/*  Creates getSensorData with a stack size of 4096 bytes at priority 4 */
 	xTaskCreate(getSensorData, "get_sensor_data", 1024*4, NULL, 4, NULL);
 	xTaskCreate(sim7600,"SIM7600",8192,NULL,1,NULL);
+	xTaskCreate(pms_toggle,"pms_toggle", 1024*2,NULL,5,NULL);
+	//	xTaskCreate(status_led, "Status_led", 1024, NULL, 2, NULL);
+	xTaskCreate(Data_Logger, "Data_Logger", 1024*8, NULL, 2, NULL);
 }
