@@ -17,9 +17,11 @@
 #include "sdkconfig.h"
 #include "stdio.h"
 #include "common.h"
+#include "driver/rmt.h"
+#include "led_strip.h"
 
-#define SDA_PIN                             21
-#define SCL_PIN                             22
+#define SDA_PIN                             21   		//SDA
+#define SCL_PIN                             22			//SCL
 #define I2C_EXAMPLE_MASTER_NUM              I2C_NUM_0
 #define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0
 #define I2C_EXAMPLE_MASTER_RX_BUF_DISABLE   0
@@ -29,31 +31,34 @@
 static const int PMS_BUF_SIZE = 256;
 static const int SIM7600_BUF_SIZE = 1024;
 
-#define RESET_PIN 			(GPIO_NUM_19 )
-#define TXD0_PIN (GPIO_NUM_1)
-#define RXD0_PIN (GPIO_NUM_3)
+#define RESET_PIN (GPIO_NUM_19)  		//Reset pin for SIM7600
+#define TXD0_PIN (GPIO_NUM_1)			//Tx for SIM7600
+#define RXD0_PIN (GPIO_NUM_3)			//Rx for SIM7600
 
-#define TXD1_PIN (GPIO_NUM_25)
-#define RXD1_PIN (GPIO_NUM_26)
+#define TXD1_PIN (GPIO_NUM_25)			//Tx for PMS5003 1
+#define RXD1_PIN (GPIO_NUM_26)			//Rx for PMS5003 1
 
-#define TXD2_PIN (GPIO_NUM_16)
-#define RXD2_PIN (GPIO_NUM_32)
+#define TXD2_PIN (GPIO_NUM_16)			//Tx for PMS5003 2
+#define RXD2_PIN (GPIO_NUM_32)			//Rx for PMS5003 2
 
-#define pms0_uart UART_NUM_0
-#define SIM7600_uart UART_NUM_1
-#define pms1_uart UART_NUM_2
+#define pms0_uart UART_NUM_0			//UART 0
+#define SIM7600_uart UART_NUM_1			//UART 1
+#define pms1_uart UART_NUM_2			//UART 2
 
-#define DEFAULT_TIME 3600
-long pms0_time = DEFAULT_TIME;
-long pms1_time = DEFAULT_TIME;
-long b_pms_time = DEFAULT_TIME;
-// DEVICE STATUS LED PIN
-#define LED_GPIO_PIN GPIO_NUM_32
-#define PMS0_SET_PIN GPIO_NUM_27
-#define PMS1_SET_PIN GPIO_NUM_33
-#define GPIO_OUTPUT_PIN_SEL0 (1ULL << LED_GPIO_PIN)
+#define DEFAULT_TIME 3600				// Default time for PMS5003 toggle
+long pms0_time = DEFAULT_TIME;			//PMS5003_1 time
+long pms1_time = DEFAULT_TIME;			//PMS5003_2 time
+long b_pms_time = DEFAULT_TIME;			//PMS5003_1 and PMS5003_2 time
+
+#define RMT_TX_CHANNEL RMT_CHANNEL_0
+#define STRIP_LED_NUMBER 1				//LED Number of Strip
+#define RGB_GPIO GPIO_NUM_12			//LED GPIO number
+#define PMS0_SET_PIN GPIO_NUM_27		//GPIO to toggle PMS5003_1
+#define PMS1_SET_PIN GPIO_NUM_33		//GPIO to toggle PMS5003_2
+
 #define GPIO_OUTPUT_PIN_SEL1 (1ULL << PMS0_SET_PIN)
 #define GPIO_OUTPUT_PIN_SEL2 (1ULL << PMS1_SET_PIN)
+
 static const char *TAG_SIM7600 = "SIM7600";
 static const char *TAG_RX = "RX";
 static const char *TAG_RTC = "RTC";
@@ -66,30 +71,33 @@ bool bmp280_flag = true;
 bmp280_t dev;
 bmp280_params_t params;
 
-int interval = 9000;
-int Counter = 0;                //integer to store counter values to update RTC time
-bool Rtc = true;                     //bool to update RTC time
-bool Start=true;					//bool to write legendsin file
-int dd=0;
-char APN[] = "www";                           //APN
-char Client_Id[] = "ez4g07";                  //Client ID
-char Username[] = "ez4g01";                   //Username
-char Password[] = "ez4g01xxx";                //Password
-char MQTT_Server[] = "104.196.168.114:1883";  //MQTT broker with port
-char *Pub_Topic = "ezioport/drnaveen";       //Topic to publish data
-char Payload[300] = "";
-char mac_id[50] = "";
+int interval = 9000;							//Interval to Average data of all sensors
+int Counter = 0;                              	//integer to store counter values to update RTC time
+bool Rtc = true;                              	//bool to update RTC time
+bool Start=true;							  	//bool to write legendsin file
+int dd=0;										//Integer to store date
+char APN[] = "www";                           	//APN
+char Client_Id[] = "ez4g06";                   	//Client ID
+char Username[] = "ez4g01";                   	//Username
+char Password[] = "ez4g01xxx";                	//Password
+char MQTT_Server[] = "104.196.168.114:1883";  	//MQTT broker with port
+char *Pub_Topic = "ezioport/drnaveen";        	//Topic to publish data
+char Payload[300] = "";							//Array to store payload
+char mac_id[50] = "";							//Array to store MAC ID
 #define mqtt_data "{\"PM1\":%d,\"PM2.5\":%d,\"PM10\":%d,\"PM1_x\":%d,\"PM2.5_x\":%d,\"PM10_x\":%d,\"RH\":%.02f,\"T\":%.02f,\"P\":%.02f,\"LAT\":%.02f,\"LON\":%.02f,\"MAC\":\"%s\"}"
 char *datalegend =   "PM1,PM2.5,PM10,PM1X,PM2.5X,PM10X,Humidity,Temperature,Pressure,LAT,LONG,ts,MAC\n";   // Legends to write into file
 
-static QueueHandle_t sensor_data_queue;
-static QueueHandle_t SD_data_queue;
-static QueueHandle_t time_queue;     //Queue to exchange RTC time between two tasks
+static QueueHandle_t sensor_data_queue;				//Queue to exchange Sensor data between two tasks
+static QueueHandle_t SD_data_queue;					//Queue to exchange SD data between two tasks
+static QueueHandle_t time_queue;     				//Queue to exchange RTC time between two tasks
 static const int PMS0_SET_BIT = BIT0;
 static const int PMS1_SET_BIT = BIT1;
+static const int NETWORK_SET_BIT = BIT0;
+static const int SD_WRITE_SET_BIT = BIT1;
 static EventGroupHandle_t pms_switch_event_group;
+static EventGroupHandle_t led_event_group;
 
-/*structure to exchange data between two tasks*/
+/*structure to exchange sensor data between two tasks*/
 typedef struct
 {
 	uint32_t PM1_0_PMS1;
@@ -105,26 +113,11 @@ typedef struct
 	float longitude;
 }Sensor_t;
 void read_config(long *pms0_t, long *pms1_t, long *b_Pms_t);
+
 /*
- * @brief initialise gpio pins for led and push button
+ * @brief initialise gpio pins for PMS5003_1 & PMS5003_2 toggle
  */
 void init_gpio() {
-
-	gpio_config_t io_conf;
-	//disable interrupt
-	io_conf.intr_type = GPIO_INTR_DISABLE;
-	//set as output mode
-	io_conf.mode = GPIO_MODE_OUTPUT;
-	//bit mask of the pins that you want to set,e.g.GPIO18/19
-	io_conf.pin_bit_mask = GPIO_OUTPUT_PIN_SEL0;
-	//disable pull-down mode
-	io_conf.pull_down_en = 0;
-	//disable pull-up mode
-	io_conf.pull_up_en = 0;
-	//configure GPIO with the given settings
-	gpio_config(&io_conf);
-
-
 	gpio_config_t io_conf2;
 	//disable interrupt
 	io_conf2.intr_type = GPIO_INTR_DISABLE;
@@ -375,6 +368,10 @@ void initI2C(i2c_mode_t i2c_mode, i2c_port_t port_no, int sda_pin, int scl_pin, 
 		return;
 	}
 }
+/*
+ * @brief Collecting Sensor data for defined interval, doing average
+ *        and sending average data in sensor_data_queue
+ */
 void getSensorData() {
 	while(1){
 		ESP_LOGI(TAG_RX, "FREE INTERNAL HEAP MQTT destroy end %d", esp_get_free_internal_heap_size());
@@ -431,18 +428,18 @@ void getSensorData() {
 			sensorvalue.latitude = GPSlat();
 			sensorvalue.longitude = GPSlog();
 			struct tm received_time;
-				/*loop to check availability of updated time to update RTC time*/
-				if ( xQueueReceive(time_queue, &received_time, 100) ) {
-					received_time.tm_year -=1900;
-					received_time.tm_mon -= 1;
-					err= writetime( I2C_NUM_0, &received_time);
-					if(err!=ESP_OK){
-						ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
-					}
-					else{
-						ESP_LOGI(TAG_RTC,"RTC is updated");
-					}
+			/*loop to check availability of updated time to update RTC time*/
+			if ( xQueueReceive(time_queue, &received_time, 100) ) {
+				received_time.tm_year -=1900;
+				received_time.tm_mon -= 1;
+				err= writetime( I2C_NUM_0, &received_time);
+				if(err!=ESP_OK){
+					ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
 				}
+				else{
+					ESP_LOGI(TAG_RTC,"RTC is updated");
+				}
+			}
 		}
 		Counter++;
 		if(!iteration_bmp){
@@ -498,28 +495,31 @@ void getSensorData() {
 		Esptime.tv_sec = systime;
 		Esptime.tv_usec = 0;
 		sntp_sync_time(&Esptime);
-				SD_Data.pms[0].pm1_0=sensorvalue.pms_num[0].pm1_0;
-				SD_Data.pms[0].pm2_5=sensorvalue.pms_num[0].pm2_5;
-				SD_Data.pms[0].pm10=sensorvalue.pms_num[0].pm10;
-				SD_Data.pms[1].pm1_0=sensorvalue.pms_num[1].pm1_0;
-				SD_Data.pms[1].pm2_5=sensorvalue.pms_num[1].pm2_5;
-				SD_Data.pms[1].pm10=sensorvalue.pms_num[1].pm10;
-				SD_Data.humidity=sensorvalue.humidity;
-				SD_Data.temperature=sensorvalue.temperature;
-				SD_Data.pressure=sensorvalue.pressure;
-				SD_Data.latitude=sensorvalue.latitude;
-				SD_Data.longitude=sensorvalue.longitude;
-				SD_Data.Day=currentTime.tm_mday;
-				SD_Data.Month=currentTime.tm_mon;
-				SD_Data.Year=currentTime.tm_year;
-				SD_Data.Hour=currentTime.tm_hour;
-				SD_Data.Minute=currentTime.tm_min;
-				SD_Data.Second=currentTime.tm_sec;
-				SD_Data.MAC=mac_id;
+		SD_Data.pms[0].pm1_0=sensorvalue.pms_num[0].pm1_0;
+		SD_Data.pms[0].pm2_5=sensorvalue.pms_num[0].pm2_5;
+		SD_Data.pms[0].pm10=sensorvalue.pms_num[0].pm10;
+		SD_Data.pms[1].pm1_0=sensorvalue.pms_num[1].pm1_0;
+		SD_Data.pms[1].pm2_5=sensorvalue.pms_num[1].pm2_5;
+		SD_Data.pms[1].pm10=sensorvalue.pms_num[1].pm10;
+		SD_Data.humidity=sensorvalue.humidity;
+		SD_Data.temperature=sensorvalue.temperature;
+		SD_Data.pressure=sensorvalue.pressure;
+		SD_Data.latitude=sensorvalue.latitude;
+		SD_Data.longitude=sensorvalue.longitude;
+		SD_Data.Day=currentTime.tm_mday;
+		SD_Data.Month=currentTime.tm_mon;
+		SD_Data.Year=currentTime.tm_year;
+		SD_Data.Hour=currentTime.tm_hour;
+		SD_Data.Minute=currentTime.tm_min;
+		SD_Data.Second=currentTime.tm_sec;
+		SD_Data.MAC=mac_id;
 		xQueueOverwrite(SD_data_queue,&SD_Data);
 		ESP_LOGI(TAG_RX,"TIME MIllis after loop %d",millis());
 	}
 }
+/*
+ * @brief  Writes Sensors data into sd card
+ */
 void Data_Logger(){
 	esp_err_t err;
 	SD_sensor_t Data;
@@ -542,6 +542,7 @@ void Data_Logger(){
 				dd=Data.Day;
 				Start=false;
 				FILE* f = fopen(filename,"r");
+				fclose(f);
 				if (f == NULL) {
 					ESP_LOGI(TAG_SD, "Failed to open file for writing legends");
 					ESP_LOGI(TAG_SD, "writing legends");
@@ -553,26 +554,82 @@ void Data_Logger(){
 				}else {
 					err = write_sd (data, dtfilename);
 					if(err==ESP_OK){
-						ESP_LOGE(TAG_SD, "data updated");
+						ESP_LOGE(TAG_SD, "data updated 1");
+						xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
 					}
 					ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
 				}
 			}else {
-				err = write_sd (data, dtfilename);
-				if(err==ESP_OK){
-					ESP_LOGE(TAG_SD, "data updated");
+				FILE* f = fopen(filename,"r");
+				fclose(f);
+				if (f != NULL) {
+					err = write_sd (data, dtfilename);
+					if(err==ESP_OK){
+						ESP_LOGI(TAG_SD, "data updated");
+						xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
+					} else {
+						xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
+					}
+					ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
 				}
-				ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
+				else{
+					ESP_LOGE(TAG_SD, "data  not updated");
+					xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
+				}
 			}
 		}
 	}
 }
+/*
+ * @brief This function shows status by RGB LED
+ */
+void status_led(){
+	rmt_config_t config = RMT_DEFAULT_CONFIG_TX(RGB_GPIO, RMT_TX_CHANNEL);
+	// set counter clock to 40MHz
+	config.clk_div = 2;
+
+	ESP_ERROR_CHECK(rmt_config(&config));
+	ESP_ERROR_CHECK(rmt_driver_install(config.channel, 0, 0));
+
+	// install ws2812 driver
+	led_strip_config_t strip_config = LED_STRIP_DEFAULT_CONFIG(STRIP_LED_NUMBER, (led_strip_dev_t)config.channel);
+	led_strip_t *strip = led_strip_new_rmt_ws2812(&strip_config);
+	if (!strip) {
+		ESP_LOGE(TAG_FLASH, "install WS2812 driver failed");
+	}
+	int led_no = 0;
+	ESP_ERROR_CHECK(strip->clear(strip, 100));
+	while(1){
+		EventBits_t ledBits = xEventGroupGetBits(led_event_group);
+		if (((ledBits&NETWORK_SET_BIT) == NETWORK_SET_BIT) &&((ledBits&SD_WRITE_SET_BIT) == SD_WRITE_SET_BIT)){
+			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 0,255,0));
+			ESP_ERROR_CHECK(strip->refresh(strip, 100));
+		} else if (((ledBits&NETWORK_SET_BIT) == NETWORK_SET_BIT) && ((ledBits&SD_WRITE_SET_BIT) != SD_WRITE_SET_BIT)){
+			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 255,255,0));
+			ESP_ERROR_CHECK(strip->refresh(strip, 100));
+		} else if(((ledBits&NETWORK_SET_BIT) != NETWORK_SET_BIT) && ((ledBits&SD_WRITE_SET_BIT) == SD_WRITE_SET_BIT)){
+			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 0,0,255));
+			ESP_ERROR_CHECK(strip->refresh(strip, 100));
+		} else {
+			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 255,0,0));
+			ESP_ERROR_CHECK(strip->refresh(strip, 100));
+		}
+		vTaskDelay(10/portTICK_RATE_MS);
+	}
+}
+/*
+ * @brief This Function checks Network of SIM7600 and connect to MQTT server
+ * & receives sensor data from their respective queues,
+ *        publish data to the pre-defined topic
+ */
 void sim7600(){
 	while (1) {
 		struct tm UpdatedTime;
 		bool pubfail = false;
+		xEventGroupClearBits(led_event_group,NETWORK_SET_BIT);
 		/*loop to Reset SIM7600 and check network*/
 		if (PowerOn()) {
+			xEventGroupSetBits(led_event_group,NETWORK_SET_BIT);
 			/*loop to Switch ON internet*/
 			if (Internet(APN)) {
 				/*loop to connect to MQTT broker and publish data*/
@@ -615,8 +672,10 @@ void sim7600(){
 				}
 			}
 		}
-		else
+		else{
+			xEventGroupClearBits(led_event_group,NETWORK_SET_BIT);
 			GPSPositioning();
+		}
 	}
 }
 
@@ -629,7 +688,9 @@ void app_main() {
 		ret = nvs_flash_init();
 	}
 	ESP_ERROR_CHECK(ret);
+	// Initialise GPIO for PMS toggle
 	init_gpio();
+	//Get MAC Id of ESP32
 	uint8_t mac_addr[8]  = {0};
 	uint8_t mac[6];
 	ret = esp_efuse_mac_get_default(mac);
@@ -641,7 +702,10 @@ void app_main() {
 	esp_base_mac_addr_get(mac_addr);
 	sprintf(mac_id, "%02x:%02x:%02x:%02x:%02x:%02x", mac_addr[0],
 			mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
 	pms_switch_event_group = xEventGroupCreate();
+	led_event_group = xEventGroupCreate();
+
 	inituart(9600, pms0_uart, TXD0_PIN, RXD0_PIN, PMS_BUF_SIZE);
 	inituart(9600, pms1_uart, TXD2_PIN, RXD2_PIN, PMS_BUF_SIZE);
 	inituart(115200, SIM7600_uart, TXD1_PIN, RXD1_PIN, SIM7600_BUF_SIZE);
@@ -655,6 +719,9 @@ void app_main() {
 	ret = init_sd(&pin);
 	if (ret != ESP_OK){
 		ESP_LOGI(TAG_FLASH,"sdcard init failed");
+		xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
+	} else {
+		xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
 	}
 	ret = bmp280_init_default_params(&params);
 	if (ret != ESP_OK){
@@ -676,6 +743,6 @@ void app_main() {
 	xTaskCreate(getSensorData, "get_sensor_data", 1024*4, NULL, 4, NULL);
 	xTaskCreate(sim7600,"SIM7600",8192,NULL,1,NULL);
 	xTaskCreate(pms_toggle,"pms_toggle", 1024*2,NULL,5,NULL);
-	//	xTaskCreate(status_led, "Status_led", 1024, NULL, 2, NULL);
+	xTaskCreate(status_led, "Status_led", 1024*3, NULL, 2, NULL);
 	xTaskCreate(Data_Logger, "Data_Logger", 1024*8, NULL, 2, NULL);
 }

@@ -190,25 +190,19 @@ bool PowerOn()
 		}
 	}
 	if(answer == 1){
-		sendATcommand("AT+CGDRT=43,1", "OK", 10000);
-		sendATcommand("AT+CGSETV=43,1", "OK", 10000);
-		vTaskDelay(1000/portTICK_RATE_MS);
-		sendATcommand("AT+CGSETV=43,0", "OK", 10000);
 		sendATcommand("AT+CGPSAUTO=1", "OK", 1000);
 		previous = millis();
-		while((!res)&& ((millis() - previous) < (10*60*1000))){
+		while((!res)&& ((millis() - previous) < (5*60*1000))){
 			res = sendATcommand2("AT+CREG?", "+CREG: 0,1","+CREG: 0,5", 500);
 			vTaskDelay(250/portTICK_RATE_MS);
-			//			GPSPositioning();
+						GPSPositioning();
 			vTaskDelay(250/portTICK_RATE_MS);
 		}
 	}
 	if(res){
-		sendATcommand("AT+CGSETV=43,1", "OK", 1000);
 		return true;
 	}
 	else{
-		sendATcommand("AT+CGSETV=43,0", "OK", 1000);
 		return false;
 	}
 }

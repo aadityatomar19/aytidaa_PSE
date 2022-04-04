@@ -75,7 +75,7 @@ esp_err_t write_sd(char *sd_data,char *filename) {
 		ESP_LOGE(TAG_SD, "Failed to open file for writing");
 		return ESP_FAIL;
 	}
-	ESP_LOGE(TAG_SD, "data:- %s ",sd_data);
+	ESP_LOGI(TAG_SD, "data:- %s ",sd_data);
 	int bytesWritten = fprintf(f, "%s \n", sd_data);
 	fclose(f);
 	free(filePath);
