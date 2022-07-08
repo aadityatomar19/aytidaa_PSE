@@ -70,7 +70,7 @@ static const char *TAG_CONFIG = "CONFIG";
 bool SD_init= true;
 bool bmp280_flag = true;
 bmp180_t dev;
-bool flag=true;
+//bool flag=true;
 int interval = 9000;							//Interval to Average data of all sensors
 int Counter = 0;                              	//integer to store counter values to update RTC time
 bool Rtc = true;                              	//bool to update RTC time
@@ -429,20 +429,17 @@ void getSensorData() {
 			sensorvalue.longitude = GPSlog();
 			struct tm received_time;
 			/*loop to check availability of updated time to update RTC time*/
-//			if ( xQueueReceive(time_queue, &received_time, 100) ) {
-			if(flag){
-				received_time.tm_year=2022;
-				received_time.tm_mon=07;
+			if ( xQueueReceive(time_queue, &received_time, 100) ) {
 				received_time.tm_year -=1900;
 				received_time.tm_mon -= 1;
-//								received_time.tm_year =2022-1900;
-//								received_time.tm_mon = 07-01;
-								received_time.tm_mday=01;
-								received_time.tm_sec=45;
-								received_time.tm_min=59;
-								received_time.tm_hour=23;
+				//				received_time.tm_year =2022-1900;
+				//				received_time.tm_mon = 06-01;
+				//				received_time.tm_mday=30;
+				//				received_time.tm_sec=45;
+				//				received_time.tm_min=59;
+				//				received_time.tm_hour=23;
 				err= writetime( I2C_NUM_0, &received_time);
-								flag=false;
+				//				flag=false;
 				if(err!=ESP_OK){
 					ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
 				}
@@ -450,7 +447,6 @@ void getSensorData() {
 					ESP_LOGI(TAG_RTC,"RTC is updated");
 				}
 			}
-//			}
 		}
 		Counter++;
 		if(!iteration_bmp){
