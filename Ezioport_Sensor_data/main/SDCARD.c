@@ -5,6 +5,7 @@
  *      Author: root
  */
 #include "SDCARD.h"
+#include <errno.h>
 
 #define MOUNT_POINT "/sdcard"
 
@@ -70,15 +71,17 @@ esp_err_t write_sd(char *sd_data,char *filename) {
 	asprintf(&filePath,"%s/%s.csv",MOUNT_POINT,filename);
 	ESP_LOGI(TAG_SD, "filename %s",filePath);
 	FILE* f = fopen(filePath,"a");
-	if (f == NULL) {
+	ESP_LOGI(TAG_SD, "errorno %d", errno);
+	//ESP_ERROR_CHECK(f);
+	if ((errno != 0) && (errno != 2)) {
 		perror("Error: ");
-		ESP_LOGE(TAG_SD, "Failed to open file for writing");
+		ESP_LOGE(TAG_SD, "Failed to open file for appending");
 		return ESP_FAIL;
 	}
 	ESP_LOGI(TAG_SD, "data:- %s ",sd_data);
 	int bytesWritten = fprintf(f, "%s \n", sd_data);
-	fclose(f);
 	free(filePath);
+	fclose(f);
 	if (bytesWritten >0)
 		return ESP_OK;
 	else

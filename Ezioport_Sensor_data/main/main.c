@@ -45,10 +45,11 @@ static const int SIM7600_BUF_SIZE = 1024;
 #define SIM7600_uart UART_NUM_1			//UART 1
 #define pms1_uart UART_NUM_2			//UART 2
 
+#define DEFAULT_TIME_0 0
 #define DEFAULT_TIME 3600				// Default time for PMS5003 toggle
-long pms0_time = DEFAULT_TIME;			//PMS5003_1 time
-long pms1_time = DEFAULT_TIME;			//PMS5003_2 time
-long b_pms_time = DEFAULT_TIME;			//PMS5003_1 and PMS5003_2 time
+long pms0_time = DEFAULT_TIME_0;			//Default time PMS5003_1 time
+long pms1_time = DEFAULT_TIME_0;			//Default time PMS5003_2 time
+long b_pms_time = DEFAULT_TIME;			//Default time PMS5003_1 and PMS5003_2 time
 
 #define RMT_TX_CHANNEL RMT_CHANNEL_0
 #define STRIP_LED_NUMBER 1				//LED Number of Strip
@@ -66,18 +67,17 @@ static const char *TAG_SD = "SD";
 static const char *TAG_FLASH = "FLASH";
 static const char *TAG_I2C = "I2C";
 static const char *TAG_CONFIG = "CONFIG";
-
+bool SD_init= true;
 bool bmp280_flag = true;
-bmp280_t dev;
-bmp280_params_t params;
-
+bmp180_t dev;
+bool flag=true;
 int interval = 9000;							//Interval to Average data of all sensors
 int Counter = 0;                              	//integer to store counter values to update RTC time
 bool Rtc = true;                              	//bool to update RTC time
 bool Start=true;							  	//bool to write legendsin file
 int dd=0;										//Integer to store date
 char APN[] = "www";                           	//APN
-char Client_Id[] = "ez4g06";                   	//Client ID
+char Client_Id[] = "ez4g48";                   	//Client ID
 char Username[] = "ez4g01";                   	//Username
 char Password[] = "ez4g01xxx";                	//Password
 char MQTT_Server[] = "104.196.168.114:1883";  	//MQTT broker with port
@@ -151,7 +151,7 @@ void init_gpio() {
  * */
 void pms_toggle(){
 	int i = 0;
-	ESP_LOGI(TAG_CONFIG,"Toggle time are %ld,  %ld,  %ld", pms0_time, pms1_time, b_pms_time);
+	ESP_LOGI(TAG_CONFIG,"Toggle time for PMS are %ld,  %ld,  %ld", pms0_time, pms1_time, b_pms_time);
 	while (1){
 		if (i == 0){
 			i= 1;
@@ -201,7 +201,7 @@ void read_config(long *pms0_time, long *pms1_time, long *both_pms_time ){
 
 	FILE* config_file = fopen(MOUNT_POINT"/config.txt","r");
 	if (config_file == NULL) {
-		ESP_LOGE(TAG_SD, "Failed to open file for reading");
+		ESP_LOGE(TAG_SD, "Failed to open config file for reading");
 		return;
 	}
 	int i = 0;
@@ -240,18 +240,18 @@ void read_config(long *pms0_time, long *pms1_time, long *both_pms_time ){
 			if (*pms0_time == 0){
 				if (strcmp(eptr, pms0_time_string) == 0){
 					ESP_LOGI(TAG_SD,"HELLO HELLO HELLO !!!!! error occurred");
-					*pms0_time = DEFAULT_TIME;
+					*pms0_time = DEFAULT_TIME_0;
 				}
 				if (errno ==EINVAL){
 					ESP_LOGI(TAG_SD,"Conversion error occurred: %d", errno);
-					*pms0_time = DEFAULT_TIME;
+					*pms0_time = DEFAULT_TIME_0;
 				}
 
 			}
 			if ((*pms0_time == LONG_MIN) || (*pms0_time == LONG_MAX)){
 				if (errno == ERANGE){
 					ESP_LOGI(TAG_SD,"The value provided was out of range");
-					*pms0_time = DEFAULT_TIME;
+					*pms0_time = DEFAULT_TIME_0;
 				}
 			}
 			ESP_LOGI(TAG_SD,"PMS1_ON_TIME variable %s  >> %s", temp_var , pms0_time_string);
@@ -271,17 +271,17 @@ void read_config(long *pms0_time, long *pms1_time, long *both_pms_time ){
 			if (*pms1_time == 0){
 				if (strcmp(eptr, pms1_time_string) == 0){
 					ESP_LOGI(TAG_SD,"HELLO HELLO HELLO !!!!! error occurred");
-					*pms1_time = DEFAULT_TIME;
+					*pms1_time = DEFAULT_TIME_0;
 				}
 				else if (errno ==EINVAL){
 					ESP_LOGI(TAG_SD,"Conversion error occurred: %d", errno);
-					*pms1_time = DEFAULT_TIME;
+					*pms1_time = DEFAULT_TIME_0;
 				}
 			}
 			if ((*pms1_time == LONG_MIN) || (*pms1_time == LONG_MAX)){
 				if (errno == ERANGE){
 					ESP_LOGI(TAG_SD,"The value provided was out of range");
-					*pms1_time = DEFAULT_TIME;
+					*pms1_time = DEFAULT_TIME_0;
 				}
 			}
 
@@ -420,7 +420,7 @@ void getSensorData() {
 				iteration_hum++;
 			}
 			if (bmp280_flag){
-				if (bmp280_read_float(I2C_NUM_0, &dev, &bmpTemp, &bmpPress) == ESP_OK){
+				if (bmp180_read_float(I2C_NUM_0, &dev, &bmpTemp, &bmpPress) == ESP_OK){
 					iteration_bmp +=1;
 					press += bmpPress;
 				}
@@ -429,10 +429,20 @@ void getSensorData() {
 			sensorvalue.longitude = GPSlog();
 			struct tm received_time;
 			/*loop to check availability of updated time to update RTC time*/
-			if ( xQueueReceive(time_queue, &received_time, 100) ) {
+//			if ( xQueueReceive(time_queue, &received_time, 100) ) {
+			if(flag){
+				received_time.tm_year=2022;
+				received_time.tm_mon=07;
 				received_time.tm_year -=1900;
 				received_time.tm_mon -= 1;
+//								received_time.tm_year =2022-1900;
+//								received_time.tm_mon = 07-01;
+								received_time.tm_mday=01;
+								received_time.tm_sec=45;
+								received_time.tm_min=59;
+								received_time.tm_hour=23;
 				err= writetime( I2C_NUM_0, &received_time);
+								flag=false;
 				if(err!=ESP_OK){
 					ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
 				}
@@ -440,6 +450,7 @@ void getSensorData() {
 					ESP_LOGI(TAG_RTC,"RTC is updated");
 				}
 			}
+//			}
 		}
 		Counter++;
 		if(!iteration_bmp){
@@ -483,7 +494,7 @@ void getSensorData() {
 			sensorvalue.pms_num[1].pm10 = 0;
 		}
 		xQueueOverwrite(sensor_data_queue,&sensorvalue);
-		ESP_LOGI(TAG_RX,"TIME MIllis of data write%d",millis());
+		ESP_LOGI(TAG_RX,"TIME millis of data write%d",millis());
 		struct tm currentTime={0};
 		SD_sensor_t SD_Data={0};
 		read_time(I2C_NUM_0 ,&currentTime);
@@ -524,7 +535,7 @@ void Data_Logger(){
 	esp_err_t err;
 	SD_sensor_t Data;
 	while(1){
-		if ( xQueueReceive(SD_data_queue, &Data, interval)) {
+		if (xQueueReceive(SD_data_queue, &Data, interval)) {
 			ESP_LOGI(TAG_RTC,"%d,%d,%d,%d,%d,%d,",Data.Year,Data.Month,Data.Day,Data.Hour,Data.Minute,Data.Second);
 			char dtfilename[50] = "";
 			char filename[50] = "";
@@ -538,43 +549,45 @@ void Data_Logger(){
 			ESP_LOGI(TAG_RX,"data: %s",data);
 			sprintf(dtfilename,"%02d%02d%04d",Data.Day,Data.Month,Data.Year);
 			sprintf(filename,"%s/%02d%02d%04d.csv",MOUNT_POINT,Data.Day,Data.Month,Data.Year);
-			if ((Data.Day != dd) || Start) {
-				dd=Data.Day;
-				Start=false;
-				FILE* f = fopen(filename,"r");
-				fclose(f);
-				if (f == NULL) {
-					ESP_LOGI(TAG_SD, "Failed to open file for writing legends");
-					ESP_LOGI(TAG_SD, "writing legends");
-					err = write_sd (datalegend, dtfilename);
-					if(err==ESP_OK){
-						ESP_LOGE(TAG_SD, "legends updated");
+			if (SD_init){
+				if ((Data.Day != dd) || Start) {
+					dd=Data.Day;
+					Start=false;
+					FILE* f = fopen(filename,"r");
+					fclose(f);
+					if (f == NULL) {
+						ESP_LOGI(TAG_SD, "Failed to open file for writing legends");
+						ESP_LOGI(TAG_SD, "writing legends");
+						err = write_sd (datalegend, dtfilename);
+						if(err==ESP_OK){
+							ESP_LOGE(TAG_SD, "legends updated");
+						}
+						ESP_LOGI(TAG_SD, "%s ",esp_err_to_name(err));
+					}else {
+						err = write_sd (data, dtfilename);
+						if(err==ESP_OK){
+							ESP_LOGE(TAG_SD, "data updated 1");
+							xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
+						}
+						ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
 					}
-					ESP_LOGI(TAG_SD, "%s ",esp_err_to_name(err));
 				}else {
-					err = write_sd (data, dtfilename);
-					if(err==ESP_OK){
-						ESP_LOGE(TAG_SD, "data updated 1");
-						xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
+					FILE* f = fopen(filename,"r");
+					fclose(f);
+					if (f != NULL) {
+						err = write_sd (data, dtfilename);
+						if(err==ESP_OK){
+							ESP_LOGI(TAG_SD, "data updated");
+							xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
+						} else {
+							xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
+						}
+						ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
 					}
-					ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
-				}
-			}else {
-				FILE* f = fopen(filename,"r");
-				fclose(f);
-				if (f != NULL) {
-					err = write_sd (data, dtfilename);
-					if(err==ESP_OK){
-						ESP_LOGI(TAG_SD, "data updated");
-						xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
-					} else {
+					else{
+						ESP_LOGE(TAG_SD, "data  not updated");
 						xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
 					}
-					ESP_LOGI(TAG_FLASH, "%s ",esp_err_to_name(err));
-				}
-				else{
-					ESP_LOGE(TAG_SD, "data  not updated");
-					xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
 				}
 			}
 		}
@@ -718,20 +731,21 @@ void app_main() {
 	initI2C(I2C_MODE_MASTER, I2C_NUM_0, SDA_PIN, SCL_PIN, 100000);
 	ret = init_sd(&pin);
 	if (ret != ESP_OK){
-		ESP_LOGI(TAG_FLASH,"sdcard init failed");
+		ESP_LOGI(TAG_FLASH,"sd card init failed");
+		SD_init=false;
 		xEventGroupClearBits(led_event_group,SD_WRITE_SET_BIT);
 	} else {
 		xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
+		SD_init=true;
 	}
-	ret = bmp280_init_default_params(&params);
+	//	ret = bmp280_init_default_params(&params);
+	//	if (ret != ESP_OK){
+	//		bmp280_flag = false;
+	//	}
+
+	ret = bmp180_init(I2C_NUM_0, &dev);
 	if (ret != ESP_OK){
 		bmp280_flag = false;
-	}
-	else {
-		ret = bmp280_init(I2C_NUM_0, &params, &dev);
-		if (ret != ESP_OK){
-			bmp280_flag = false;
-		}
 	}
 	read_config(&pms0_time, &pms1_time, &b_pms_time);
 
