@@ -70,14 +70,14 @@ static const char *TAG_CONFIG = "CONFIG";
 bool SD_init= true;
 bool bmp280_flag = true;
 bmp180_t dev;
-//bool flag=true;
-int interval = 9000;							//Interval to Average data of all sensors
-int Counter = 0;                              	//integer to store counter values to update RTC time
+bool flag=true;
+int interval = 9500;							//Interval to Average data of all sensors
+unsigned long Counter = 0;                              	//integer to store counter values to update RTC time
 bool Rtc = true;                              	//bool to update RTC time
 bool Start=true;							  	//bool to write legendsin file
 int dd=0;										//Integer to store date
 char APN[] = "www";                           	//APN
-char Client_Id[] = "ez4g48";                   	//Client ID
+char Client_Id[] = "ez4g62";                   	//Client ID
 char Username[] = "ez4g01";                   	//Username
 char Password[] = "ez4g01xxx";                	//Password
 char MQTT_Server[] = "104.196.168.114:1883";  	//MQTT broker with port
@@ -389,7 +389,7 @@ void getSensorData() {
 		unsigned long previousmillis = millis();
 		sensor_data_t sensorvalue = {0};
 		ESP_LOGI(TAG_RX,"TIME MIllis %d",millis());
-		while ( millis() - previousmillis <= interval ) {
+		while ( millis() - previousmillis <=interval ) {
 			float temperat = 0;
 			float humid = 0;
 			pm_data_t value0 = {0};
@@ -432,14 +432,7 @@ void getSensorData() {
 			if ( xQueueReceive(time_queue, &received_time, 100) ) {
 				received_time.tm_year -=1900;
 				received_time.tm_mon -= 1;
-				//				received_time.tm_year =2022-1900;
-				//				received_time.tm_mon = 06-01;
-				//				received_time.tm_mday=30;
-				//				received_time.tm_sec=45;
-				//				received_time.tm_min=59;
-				//				received_time.tm_hour=23;
 				err= writetime( I2C_NUM_0, &received_time);
-				//				flag=false;
 				if(err!=ESP_OK){
 					ESP_LOGI(TAG_RTC,"RTC is not updated %s",esp_err_to_name(err));
 				}
@@ -447,6 +440,7 @@ void getSensorData() {
 					ESP_LOGI(TAG_RTC,"RTC is updated");
 				}
 			}
+			vTaskDelay(112/portTICK_RATE_MS);
 		}
 		Counter++;
 		if(!iteration_bmp){
@@ -532,7 +526,7 @@ void Data_Logger(){
 	SD_sensor_t Data;
 	while(1){
 		if (xQueueReceive(SD_data_queue, &Data, interval)) {
-			ESP_LOGI(TAG_RTC,"%d,%d,%d,%d,%d,%d,",Data.Year,Data.Month,Data.Day,Data.Hour,Data.Minute,Data.Second);
+//			ESP_LOGI(TAG_RTC,"%d,%d,%d,%d,%d,%d,",Data.Year,Data.Month,Data.Day,Data.Hour,Data.Minute,Data.Second);
 			char dtfilename[50] = "";
 			char filename[50] = "";
 			char data[200] = "";
@@ -671,7 +665,7 @@ void sim7600(){
 						printf("data not found");
 					}
 					/*loop to get updated time from SIM7600 and overwrite it in a queue*/
-					if ((Counter >= 100) || Rtc) {
+					if ((Counter >= 4320) || Rtc) {
 						getTime(&UpdatedTime);
 						printf("%d,%d,%d,%d,%d,%d",(UpdatedTime.tm_year),(UpdatedTime.tm_mon),UpdatedTime.tm_mday,UpdatedTime.tm_hour,UpdatedTime.tm_min,UpdatedTime.tm_sec);
 						xQueueOverwrite(time_queue, &UpdatedTime);
