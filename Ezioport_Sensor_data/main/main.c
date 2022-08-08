@@ -3,7 +3,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "driver/uart.h"
-#include "string.h"
+#include <string.h>
 #include "errno.h"
 #include "driver/gpio.h"
 #include "nvs.h"
@@ -11,6 +11,7 @@
 #include "esp_timer.h"
 #include <time.h>
 #include "esp_err.h"
+#include "esp_wifi.h"
 #include "freertos/event_groups.h"
 #include "esp_event.h"
 #include <main.h>
@@ -22,18 +23,13 @@
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
-#include "esp_wifi.h"
-//#include "protocol_examples_common.h"
+#include "esp_netif.h"
+#include <stdlib.h>
+#include "tcpip_adapter_types.h"
 
 
-#if CONFIG_EXAMPLE_CONNECT_WIFI
-#include "esp_wifi.h"
-#endif
 
-#define SSID "Qwerty"
-#define PASSWORD "yesnomaybem8"
-
-#define SDA_PIN                             21   		//SDA
+#define SDA_PIN                            21   		//SDA
 #define SCL_PIN                             22			//SCL
 #define I2C_EXAMPLE_MASTER_NUM              I2C_NUM_0
 #define I2C_EXAMPLE_MASTER_TX_BUF_DISABLE   0
@@ -59,12 +55,16 @@ static const int SIM7600_BUF_SIZE = 1024;
 #define SIM7600_uart UART_NUM_1			//UART 1
 #define pms1_uart UART_NUM_2			//UART 2
 
-#define DEFAULT_TIME_0 0
+#define DEFAULT_FOTA 0					//Default value for FOTA
+#define DEFAULT_SSID "Ezioport"			//Default SSID
+#define DEFAULT_PASS "Ezioport12345"		//Default PASSWORD
+#define DEFAULT_TIME_0 0				//Default time for PMS1 & PMS2
 #define DEFAULT_TIME 3600				// Default time for PMS5003 toggle
-long pms0_time = DEFAULT_TIME_0;			//Default time PMS5003_1 time
-long pms1_time = DEFAULT_TIME_0;			//Default time PMS5003_2 time
+long pms0_time = DEFAULT_TIME_0;		//Default time PMS5003_1 time
+long pms1_time = DEFAULT_TIME_0;		//Default time PMS5003_2 time
 long b_pms_time = DEFAULT_TIME;			//Default time PMS5003_1 and PMS5003_2 time
-long fota=0;
+long fota=DEFAULT_FOTA;					//Variable to store value for FOTA
+
 
 #define RMT_TX_CHANNEL RMT_CHANNEL_0
 #define STRIP_LED_NUMBER 1				//LED Number of Strip
@@ -88,19 +88,18 @@ static const char *TAG_ota = "simple_ota_example";
 static const char *TAG_WiFi = "wifi_conection";
 
 extern const uint8_t server_cert_pem_start[] asm("_binary_ca_cert_pem_start");
-extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
+//extern const uint8_t server_cert_pem_end[] asm("_binary_ca_cert_pem_end");
 
 bool SD_init= true;
 bool bmp280_flag = true;
 bmp180_t dev;
 bool flag=true;
 int interval = 9500;							//Interval to Average data of all sensors
-unsigned long Counter = 0;                              	//integer to store counter values to update RTC time
+unsigned long Counter = 0;                      //integer to store counter values to update RTC time
 bool Rtc = true;                              	//bool to update RTC time
 bool Start=true;							  	//bool to write legendsin file
 int dd=0;										//Integer to store date
 char APN[] = "www";                           	//APN
-char Client_Id[] = "ez4g10";                   	//Client ID
 char Username[] = "ez4g01";                   	//Username
 char Password[] = "ez4g01xxx";                	//Password
 char MQTT_Server[] = "104.196.168.114:1883";  	//MQTT broker with port
@@ -109,6 +108,8 @@ char Payload[300] = "";							//Array to store payload
 char mac_id[50] = "";							//Array to store MAC ID
 #define mqtt_data "{\"PM1\":%d,\"PM2.5\":%d,\"PM10\":%d,\"PM1_x\":%d,\"PM2.5_x\":%d,\"PM10_x\":%d,\"RH\":%.02f,\"T\":%.02f,\"P\":%.02f,\"LAT\":%.02f,\"LON\":%.02f,\"MAC\":\"%s\"}"
 char *datalegend =   "PM1,PM2.5,PM10,PM1X,PM2.5X,PM10X,Humidity,Temperature,Pressure,LAT,LONG,ts,MAC\n";   // Legends to write into file
+char SSID[32]= DEFAULT_SSID;
+char PASSWORD[64]= DEFAULT_PASS;
 
 static QueueHandle_t sensor_data_queue;				//Queue to exchange Sensor data between two tasks
 static QueueHandle_t SD_data_queue;					//Queue to exchange SD data between two tasks
@@ -140,19 +141,9 @@ typedef struct
 	float latitude;
 	float longitude;
 }Sensor_t;
-void read_config(long *pms0_t, long *pms1_t, long *b_Pms_t, long *fota);
+void read_config(long *pms0_t, long *pms1_t, long *b_Pms_t);
+void read_fota_config(long *fota);
 
-void wifi_connect(){
-	wifi_config_t cfg = {
-			.sta = {
-					.ssid = SSID,
-					.password = PASSWORD,
-			},
-	};
-	ESP_ERROR_CHECK( esp_wifi_disconnect() );
-	ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &cfg) );
-	ESP_ERROR_CHECK( esp_wifi_connect() );
-}
 /*
  * @brief initialise gpio pins for PMS5003_1 & PMS5003_2 toggle
  */
@@ -185,27 +176,28 @@ void init_gpio() {
 	//configure GPIO with the given settings
 	gpio_config(&io_conf3);
 }
-static esp_err_t event_handler(void *ctx, system_event_t *event)
+/*
+ * @brief Error handler Wi_Fi
+ */
+static void event_handler(void* arg, esp_event_base_t event_base,
+		int32_t event_id, void* event_data)
 {
-	switch(event->event_id) {
-	case SYSTEM_EVENT_STA_START:
-		wifi_connect();
-		ESP_LOGI(TAG_WiFi, "Connecting.......");
-		break;
-	case SYSTEM_EVENT_STA_GOT_IP:
-		ESP_LOGI(TAG_WiFi, "connected");
-		xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
-		break;
-	case SYSTEM_EVENT_STA_DISCONNECTED:
-		ESP_LOGI(TAG_WiFi, "Retrying to connect");
+	if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
 		esp_wifi_connect();
+		ESP_LOGI(TAG_WiFi, "connecting.........");
+	} else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+		esp_wifi_connect();
+		ESP_LOGI(TAG_WiFi, "retry to connect to the AP");
 		xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
-		break;
-	default:
-		break;
+	} else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+		ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+		ESP_LOGI(TAG_WiFi, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+		xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
 	}
-	return ESP_OK;
 }
+/*
+ * @brief Error handler for http
+ */
 esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 {
 	switch (evt->event_id) {
@@ -233,21 +225,51 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
 	}
 	return ESP_OK;
 }
+/*
+ * @brief function to initialise wifi
+ */
 static void initialise_wifi(void)
 {
-	esp_log_level_set("wifi", ESP_LOG_NONE); // disable wifi driver logging
-	tcpip_adapter_init();
+	//	wifi_event_group = xEventGroupCreate();
+	ESP_ERROR_CHECK(esp_netif_init());
+	ESP_ERROR_CHECK(esp_event_loop_create_default());
+	esp_netif_create_default_wifi_sta();
+
 	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-	ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
-	ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
-	ESP_ERROR_CHECK( esp_wifi_start() );
-	esp_err_t ret = tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA ,"icircuit");
-	if(ret != ESP_OK ){
-		ESP_LOGE(TAG_WiFi,"failed to set hostname:%d",ret);
-	}
+	ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+	esp_event_handler_instance_t instance_any_id;
+	esp_event_handler_instance_t instance_got_ip;
+	ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+			ESP_EVENT_ANY_ID,
+			&event_handler,
+			NULL,
+			&instance_any_id));
+	ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+			IP_EVENT_STA_GOT_IP,
+			&event_handler,
+			NULL,
+			&instance_got_ip));
+
+	wifi_config_t wifi_config ;
+	memset(&wifi_config.sta.ssid,0, sizeof(wifi_config.sta.ssid));
+	memcpy(&wifi_config.sta.ssid, (char*)SSID,strlen(SSID));
+	memset(&wifi_config.sta.password,0, sizeof(wifi_config.sta.password));
+	memcpy(&wifi_config.sta.password, (char*)PASSWORD, strlen(PASSWORD));
+	wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+	wifi_config.sta.pmf_cfg.capable = true;
+	wifi_config.sta.pmf_cfg.required = false;
+	ESP_LOGI(TAG_WiFi, "ssid %s",wifi_config.sta.ssid);
+	ESP_LOGI(TAG_WiFi, "password %s",wifi_config.sta.password);
+	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+	ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config) );
+	ESP_ERROR_CHECK(esp_wifi_start() );
+
+	ESP_LOGI(TAG_WiFi, "wifi_init_sta finished.");
 }
-
-
+/*
+ * @brief function to update firmware
+ */
 void FOTA_Update()
 {
 	ESP_LOGI(TAG_ota, "Starting OTA example");
@@ -260,6 +282,7 @@ void FOTA_Update()
 	};
 	esp_err_t ret = esp_https_ota(&config);
 	if (ret == ESP_OK) {
+		unlink(MOUNT_POINT"/fota.txt");
 		xEventGroupSetBits(wifi_event_group, FOTA_SUCCESS);
 		vTaskDelay(2000/portTICK_RATE_MS);
 		esp_restart();
@@ -268,13 +291,13 @@ void FOTA_Update()
 		xEventGroupClearBits(wifi_event_group, FOTA_SUCCESS);
 	}
 }
+/*
+ * @brief function to wait for wifi connection and call fota_update function
+ */
 void FOTA(void *pvParam){
 	while(1){
 		printf("FOTA task started now \n");
 		xEventGroupWaitBits(wifi_event_group,CONNECTED_BIT,false,true,portMAX_DELAY);
-		tcpip_adapter_ip_info_t ip_info;
-		ESP_ERROR_CHECK(tcpip_adapter_get_ip_info(TCPIP_ADAPTER_IF_STA, &ip_info));
-		printf("IP :  %s\n", ip4addr_ntoa(&ip_info.ip));
 		FOTA_Update();
 	}
 }
@@ -291,9 +314,7 @@ void pms_toggle(){
 			gpio_set_level(PMS0_SET_PIN,1);
 			xEventGroupClearBits(pms_switch_event_group,PMS1_SET_BIT);
 			xEventGroupSetBits(pms_switch_event_group,PMS0_SET_BIT);
-			//			xEventGroupClearBits(pms_switch_event_group,BOTH_PMS_SET_BIT);
 			vTaskDelay(pms0_time*1000 / portTICK_RATE_MS);
-
 		}
 		else if ( i ==1){
 			i= 2;
@@ -302,18 +323,14 @@ void pms_toggle(){
 			xEventGroupClearBits(pms_switch_event_group,PMS0_SET_BIT);
 			xEventGroupSetBits(pms_switch_event_group,PMS1_SET_BIT);
 			vTaskDelay(pms1_time*1000 / portTICK_RATE_MS);
-
-			//			xEventGroupClearBits(pms_switch_event_group,BOTH_PMS_SET_BIT);
 		}
 		else {
 			i = 0 ;
 			gpio_set_level(PMS0_SET_PIN,1);
 			gpio_set_level(PMS1_SET_PIN,1);
-			//			xEventGroupSetBits(pms_switch_event_group,BOTH_PMS_SET_BIT);
 			xEventGroupSetBits(pms_switch_event_group,PMS0_SET_BIT);
 			xEventGroupSetBits(pms_switch_event_group,PMS1_SET_BIT);
 			vTaskDelay(b_pms_time*1000 / portTICK_RATE_MS);
-
 		}
 		vTaskDelay(50 / portTICK_RATE_MS);
 
@@ -326,12 +343,10 @@ void pms_toggle(){
  *        default time i.e 3600 sec
  * @param    *pms0_time,*pms1_time,*both_pms_time  pointer to save configuration time
  */
-void read_config(long *pms0_time, long *pms1_time, long *both_pms_time, long *fota ){
+void read_config(long *pms0_time, long *pms1_time, long *both_pms_time){
 	char *pms0_time_string = (char*)malloc(sizeof(char));
 	char *pms1_time_string = (char*)malloc(sizeof(char));
 	char *both_pms_time_string = (char*)malloc(sizeof(char));
-	char *fota_string = (char*)malloc(sizeof(char));
-
 	FILE* config_file = fopen(MOUNT_POINT"/config.txt","r");
 	if (config_file == NULL) {
 		ESP_LOGE(TAG_SD, "Failed to open config file for reading");
@@ -450,9 +465,40 @@ void read_config(long *pms0_time, long *pms1_time, long *both_pms_time, long *fo
 			}
 			ESP_LOGI(TAG_SD,"BOTH_PMS_ON_TIME %s >> %s ", temp_var,both_pms_time_string);
 		}
-		else if( strncmp("FOTA :",line[i],06)==0)
-		{
+	}
+}
+/*
+ * @brief Function to read fota configuration
+ */
+void read_fota_config(long *fota){
+	char *fota_string = (char*)malloc(sizeof(char));
+	FILE* config_file = fopen(MOUNT_POINT"/fota.txt","r");
+	if (config_file == NULL) {
+		ESP_LOGE(TAG_SD, "Failed to open fota config file for reading");
+		return;
+	}
+	int i = 0;
+	int tot = 0;
+	char line[4][100];
+	while(fgets(line[i],sizeof(line[i]),config_file) != NULL){
+		char* pos = strchr(line[i],'\r');
+		if (pos){
+			*pos = '\0';
+		}
+		i++;
+	}
+	fclose(config_file);
+	tot = i;
+	for(i=0;i<tot;i++){
+		char* token;
+		char* token1;
+		char* temp_var;
+		char pos[200] ;
+		char *eptr;
+		strcpy(pos,line[i]);
 
+		if( strncmp("FOTA :",line[i],06)==0)
+		{
 			token = strtok(pos,";");
 			temp_var = token;
 			token1 = strtok(temp_var,":");
@@ -466,22 +512,46 @@ void read_config(long *pms0_time, long *pms1_time, long *both_pms_time, long *fo
 			if (*fota == 0){
 				if (strcmp(eptr, fota_string) == 0){
 					ESP_LOGI(TAG_SD,"HELLO HELLO HELLO !!!!! error occurred");
-					*fota = DEFAULT_TIME_0;
+					*fota = DEFAULT_FOTA;
 				}
 				if (errno ==EINVAL){
 					ESP_LOGI(TAG_SD,"Conversion error occurred: %d", errno);
-					*fota = DEFAULT_TIME_0;
+					*fota = DEFAULT_FOTA;
 				}
 
 			}
 			if ((*fota == LONG_MIN) || (*fota == LONG_MAX)){
 				if (errno == ERANGE){
 					ESP_LOGI(TAG_SD,"The value provided was out of range");
-					*fota = DEFAULT_TIME_0;
+					*fota = DEFAULT_FOTA;
 				}
 			}
 			ESP_LOGI(TAG_SD,"fota variable %s  >> %s", temp_var , fota_string);
 
+		}
+		else if (strncmp("SSID :",line[i],6)==0){
+			token = strtok(pos,";");
+			temp_var = token;
+			token1 = strtok(temp_var,":");
+
+			while(token1 !=0){
+				temp_var =token1;
+				token1 = strtok(0,":");
+			}
+			strcpy(SSID,temp_var);
+			ESP_LOGI(TAG_SD,"SSID %s>>%s", temp_var,SSID);
+		}
+		else if (strncmp("PASSWORD :",line[i],10)==0){
+			token = strtok(pos,";");
+			temp_var = token;
+			token1 = strtok(temp_var,":");
+
+			while(token1 !=0){
+				temp_var = token1;
+				token1 = strtok(0,":");
+			}
+			strcpy(PASSWORD,temp_var) ;
+			ESP_LOGI(TAG_SD,"password %s>>%s", temp_var,PASSWORD);
 		}
 	}
 }
@@ -787,7 +857,7 @@ void status_led(){
 	}
 }
 /*
- * @brief This function shows status by RGB LED
+ * @brief This function shows FOTA status by RGB LED
  */
 void fota_status_led(){
 	rmt_config_t config = RMT_DEFAULT_CONFIG_TX(RGB_GPIO, RMT_TX_CHANNEL);
@@ -811,10 +881,10 @@ void fota_status_led(){
 			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 0,255,0));
 			ESP_ERROR_CHECK(strip->refresh(strip, 100));
 		} else if (((ledBits&FOTA_BIT) == FOTA_BIT) && ((ledBits&CONNECTED_BIT) != CONNECTED_BIT)){
-			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 20, 44, 225));
+			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 255,0,255));
 			ESP_ERROR_CHECK(strip->refresh(strip, 100));
 		} else if(((ledBits&FOTA_BIT) == FOTA_BIT) && ((ledBits&CONNECTED_BIT) == CONNECTED_BIT) && ((ledBits&FOTA_SUCCESS) != FOTA_SUCCESS)){
-			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 20, 44, 225));
+			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 255,0,255));
 			ESP_ERROR_CHECK(strip->refresh(strip, 100));
 			vTaskDelay(200/portTICK_RATE_MS);
 			ESP_ERROR_CHECK(strip->set_pixel(strip, led_no, 0,0,0));
@@ -851,7 +921,7 @@ void sim7600(){
 								received_data_mqtt.humidity, received_data_mqtt.temperature,received_data_mqtt.pressure,received_data_mqtt.latitude,received_data_mqtt.longitude,mac_id);
 						printf("Payload= %s",Payload );
 						/*loop to connect to MQTT broker*/
-						if (MQTT_Start(MQTT_Server, Username, Password, Client_Id)) {
+						if (MQTT_Start(MQTT_Server, Username, Password, mac_id)) {
 							/*loop to publish Sensors data*/
 							if (MQTT_Pub_data(Pub_Topic, Payload)) {
 								printf("Data published successfully");
@@ -894,15 +964,10 @@ void app_main() {
 		ESP_ERROR_CHECK(nvs_flash_erase());
 		ret = nvs_flash_init();
 	}
-
 	ESP_ERROR_CHECK(ret);
-	ESP_ERROR_CHECK(esp_netif_init());
-	ESP_ERROR_CHECK(esp_event_loop_create_default());
-	ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
-	wifi_event_group = xEventGroupCreate();
 	pms_switch_event_group = xEventGroupCreate();
 	led_event_group = xEventGroupCreate();
-	inituart(9600, pms0_uart, TXD0_PIN, RXD0_PIN, PMS_BUF_SIZE);
+	wifi_event_group = xEventGroupCreate();
 	sdCard_pins_config_t  pin = {
 			.miso_pin = 19,
 			.mosi_pin = 23,
@@ -918,18 +983,19 @@ void app_main() {
 		xEventGroupSetBits(led_event_group,SD_WRITE_SET_BIT);
 		SD_init=true;
 	}
-	ESP_LOGI(TAG_SIM7600,"hello aaditya blue");
-	read_config(&pms0_time, &pms1_time, &b_pms_time, &fota);
+	read_config(&pms0_time, &pms1_time, &b_pms_time);
+	read_fota_config(&fota);
 	xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
 	xEventGroupClearBits(wifi_event_group, FOTA_BIT);
 	xEventGroupClearBits(wifi_event_group, FOTA_SUCCESS);
 	if(fota==1){
 		xEventGroupSetBits(wifi_event_group, FOTA_BIT);
 		xTaskCreate(fota_status_led, "fota_status_led", 1024*3, NULL, 5, NULL);
-		initialise_wifi();//
+		initialise_wifi();
 		xTaskCreate(&FOTA,"FOTA",10000,NULL,5,NULL);
 	}
 	else{
+		inituart(9600, pms0_uart, TXD0_PIN, RXD0_PIN, PMS_BUF_SIZE);
 		inituart(9600, pms1_uart, TXD2_PIN, RXD2_PIN, PMS_BUF_SIZE);
 		inituart(115200, SIM7600_uart, TXD1_PIN, RXD1_PIN, SIM7600_BUF_SIZE);
 		// Initialise GPIO for PMS toggle
